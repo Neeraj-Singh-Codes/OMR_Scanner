@@ -1,0 +1,12 @@
+{
+  "name": "omr-evaluation-system",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "install:all": "pip install -r scanner/requirements.txt && npm --prefix server install && npm --prefix client install",
+    "test:server": "npm --prefix server test",
+    "test:scanner": "python -m pytest scanner/app/tests",
+    "test": "npm --prefix server test && python -m pytest scanner/app/tests",
+    "build:client": "npm --prefix client run build"
+  }
+}

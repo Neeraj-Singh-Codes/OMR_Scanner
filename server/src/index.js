@@ -49,8 +49,9 @@ import { fileURLToPath } from "url";
 export const startServer = async () => {
   try {
     try {
-      await mongoose.connect(MONGODB_URI, { serverSelectionTimeoutMS: 2000 });
-      console.log("Connected to MongoDB successfully at:", MONGODB_URI);
+      await mongoose.connect(MONGODB_URI, { serverSelectionTimeoutMS: 8000 });
+      const maskedUri = MONGODB_URI.replace(/:([^:@]+)@/, ":****@");
+      console.log("Connected to MongoDB successfully at:", maskedUri);
     } catch (dbErr) {
       console.warn("MongoDB connection warning: Running without persistent DB until MongoDB is started.", dbErr.message);
     }

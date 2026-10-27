@@ -62,6 +62,20 @@ const examSchema = new mongoose.Schema(
         default: 0,
       },
     },
+    roster: [
+      {
+        rollNumber: {
+          type: String,
+          required: true,
+          trim: true,
+        },
+        studentName: {
+          type: String,
+          required: true,
+          trim: true,
+        },
+      },
+    ],
     templateVersion: {
       type: String,
       default: "OMR-V1.0",

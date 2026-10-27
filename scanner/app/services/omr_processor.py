@@ -67,7 +67,7 @@ class OMRProcessor:
         sharpness = prep["sharpness"]
 
         # 3. Detect Alignment Features
-        # Strategy A: Standard 4-Corner Alignment Markers
+        # Try base orientation first
         markers = None
         try:
             markers = find_corner_markers(gray)
@@ -75,20 +75,59 @@ class OMRProcessor:
             markers = None
 
         if markers is None:
-            # Strategy B: School Dual-Table 25-Question Format
             dual_tables = detect_dual_tables(gray)
             if dual_tables is not None:
-                res = evaluate_dual_table_omr(
-                    image=image,
-                    dual_tables=dual_tables,
-                    generate_annotated=generate_annotated,
-                    sharpness=sharpness,
-                )
-                elapsed_ms = round((time.perf_counter() - start_time) * 1000, 1)
-                res["diagnostics"]["processing_time_ms"] = elapsed_ms
-                return res
+                top_y = min(dual_tables["left_table"][0][1], dual_tables["right_table"][0][1])
+                if top_y > 80:
+                    res = evaluate_dual_table_omr(
+                        image=image,
+                        dual_tables=dual_tables,
+                        generate_annotated=generate_annotated,
+                        sharpness=sharpness,
+                    )
+                    elapsed_ms = round((time.perf_counter() - start_time) * 1000, 1)
+                    res["diagnostics"]["processing_time_ms"] = elapsed_ms
+                    return res
 
-            # Neither template format detected
+        # If not found at base orientation, try alternate rotations (90, 180, 270)
+        if markers is None:
+            h, w = image.shape[:2]
+            alt_angles = [270, 90, 180] if w > h else [90, 270, 180]
+            for angle in alt_angles:
+                if angle == 90:
+                    rot_img = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+                elif angle == 180:
+                    rot_img = cv2.rotate(image, cv2.ROTATE_180)
+                elif angle == 270:
+                    rot_img = cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+                rot_gray = cv2.cvtColor(rot_img, cv2.COLOR_BGR2GRAY) if len(rot_img.shape) == 3 else rot_img
+
+                try:
+                    markers = find_corner_markers(rot_gray)
+                except MarkerDetectionError:
+                    markers = None
+
+                if markers is not None:
+                    image = rot_img
+                    gray = rot_gray
+                    break
+
+                dual_tables = detect_dual_tables(rot_gray)
+                if dual_tables is not None:
+                    top_y = min(dual_tables["left_table"][0][1], dual_tables["right_table"][0][1])
+                    if top_y > 80:
+                        res = evaluate_dual_table_omr(
+                            image=rot_img,
+                            dual_tables=dual_tables,
+                            generate_annotated=generate_annotated,
+                            sharpness=sharpness,
+                        )
+                        elapsed_ms = round((time.perf_counter() - start_time) * 1000, 1)
+                        res["diagnostics"]["processing_time_ms"] = elapsed_ms
+                        return res
+
+        if markers is None:
             raise MarkerDetectionError(
                 "MARKER_NOT_FOUND",
                 "Could not locate four corner alignment markers or dual question tables in image. "
@@ -132,6 +171,25 @@ class OMRProcessor:
         total_questions = len(classified_questions)
         is_review_required = len(review_required_questions) > 0
 
+        # 7b. Candidate Info Extraction for Canonical Sheets
+        header_b64 = None
+        candidate_info = {
+            "student_name": "Unassigned Student",
+            "roll_number": "UNASSIGNED",
+            "division": None,
+            "confidence": 0.0,
+            "is_ambiguous": True,
+            "ambiguity_reason": "Header could not be located.",
+        }
+        try:
+            from scanner.app.services.candidate_ocr import extract_candidate_info
+            hdr_crop = warped_color[80:650, 60:1140]
+            candidate_info = extract_candidate_info(hdr_crop)
+            _, hdr_buf = cv2.imencode(".jpg", hdr_crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
+            header_b64 = base64.b64encode(hdr_buf).decode("utf-8")
+        except Exception:
+            header_b64 = None
+
         # 8. Annotated Visualization (Optional)
         annotated_b64 = None
         if generate_annotated:
@@ -155,11 +213,15 @@ class OMRProcessor:
                 "review_question_numbers": review_required_questions,
             },
             "questions": classified_questions,
+            "candidate_info": candidate_info,
             "diagnostics": {
                 "processing_time_ms": elapsed_ms,
                 "sharpness_score": sharpness,
                 "detected_markers": markers,
                 "canonical_dimensions": self.config["page"]["canonical_width_px"],
+                "annotated_image_base64": annotated_b64,
+                "header_image_base64": header_b64,
+                "candidate_info": candidate_info,
             },
             "annotated_image_base64": annotated_b64,
         }
@@ -204,29 +266,3 @@ class OMRProcessor:
                     cv2.circle(annotated, (cx, cy), radius + 5, (0, 0, 255), 2, cv2.LINE_AA)
 
         return annotated
-
-
-if __name__ == "__main__":
-    from scanner.app.services.synthetic_generator import SyntheticOMRGenerator
-
-    gen = SyntheticOMRGenerator()
-    test_responses = {
-        1: "A",
-        2: "B",
-        3: "C",
-        4: "D",
-        5: ["A", "C"],  # Multiple
-        6: {"option": "B", "type": "LIGHT"},  # Light mark
-        7: None,  # Blank
-        8: "D",
-    }
-    img = gen.generate_sheet_with_responses(test_responses)
-    photo = gen.simulate_camera_capture(img, rotation_deg=2.5, tilt_x=0.3, lighting_gradient=True)
-
-    processor = OMRProcessor()
-    result = processor.process_image(photo)
-
-    print("Pipeline executed successfully!")
-    print(f"Total Questions: {result['total_questions']}")
-    print(f"Summary: {result['summary']}")
-    print(f"Detected Answers Q1-Q8: {[result['detected_answers'][str(i)] for i in range(1, 9)]}")

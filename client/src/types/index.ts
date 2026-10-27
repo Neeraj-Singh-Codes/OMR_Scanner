@@ -1,5 +1,10 @@
 export type OptionLetter = "A" | "B" | "C" | "D";
 
+export interface RosterStudent {
+  rollNumber: string;
+  studentName: string;
+}
+
 export interface Exam {
   _id: string;
   title: string;
@@ -13,6 +18,7 @@ export interface Exam {
     incorrectMarks: number;
     unansweredMarks: number;
   };
+  roster?: RosterStudent[];
   templateVersion: string;
   totalScans?: number;
   pendingReviews?: number;
@@ -67,9 +73,27 @@ export interface ScanResult {
     multipleMarkedQuestions?: number[];
     annotatedImageBase64?: string;
     headerImageBase64?: string;
+    nameImageBase64?: string;
+    rollImageBase64?: string;
     rollNumberFlagged?: boolean;
     rollNumberConfidence?: number;
     rollNumberReason?: string;
+    nameFlagged?: boolean;
+    nameConfidence?: number;
+    nameReason?: string;
+    nameCrossedOutDetected?: boolean;
+    rollCrossedOutDetected?: boolean;
+    nameCorrectionSuspected?: boolean;
+    rollCorrectionSuspected?: boolean;
+    rawOcrText?: string;
+    rawRollText?: string;
+    reviewReasons?: string[];
+    recognitionEngine?: string;
+    rosterMatch?: {
+      matched: boolean;
+      rosterName?: string;
+      similarity?: number;
+    };
     detectedStudentName?: string;
     detectedRollNumber?: string;
     detectedDivision?: string;
@@ -87,6 +111,16 @@ export interface BatchItemResult {
   reviewRequired?: boolean;
   rollNumberFlagged?: boolean;
   rollNumberReason?: string;
+  nameFlagged?: boolean;
+  nameReason?: string;
+  nameConfidence?: number;
+  nameCrossedOutDetected?: boolean;
+  rollCrossedOutDetected?: boolean;
+  rosterMatch?: {
+    matched: boolean;
+    rosterName?: string;
+    similarity?: number;
+  };
   score?: number;
   maximumMarks?: number;
   percentage?: number;

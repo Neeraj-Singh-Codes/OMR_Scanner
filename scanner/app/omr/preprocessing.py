@@ -35,28 +35,36 @@ def load_image_from_bytes(data: bytes) -> np.ndarray:
     return img
 
 
-def validate_image_resolution(image: np.ndarray, min_w: int = 600, min_h: int = 800) -> None:
-    """Verifies image meets minimum resolution to resolve OMR bubbles."""
+def validate_image_resolution(image: np.ndarray, min_w: int = 480, min_h: int = 640) -> None:
+    """
+    Verifies image meets minimum resolution to resolve OMR bubbles.
+    Supports both portrait and landscape orientation without rejecting sideways camera captures.
+    """
     h, w = image.shape[:2]
-    if w < min_w or h < min_h:
+    short_side = min(w, h)
+    long_side = max(w, h)
+    min_short = min(min_w, min_h)
+    min_long = max(min_w, min_h)
+
+    if short_side < min_short or long_side < min_long:
         raise PreprocessingError(
             "LOW_RESOLUTION",
-            f"Image resolution ({w}x{h}) is too low for reliable bubble detection. Minimum required is {min_w}x{min_h}.",
-            {"width": w, "height": h, "min_width": min_w, "min_height": min_h}
+            f"Image resolution ({w}x{h}) is too low for reliable bubble detection. Minimum required is {min_short}x{min_long}.",
+            {"width": w, "height": h, "min_short": min_short, "min_long": min_long}
         )
 
 
 def compute_blur_metric(gray: np.ndarray) -> float:
     """
     Computes the variance of the Laplacian.
-    Higher value means sharper image; low value (< 40.0) indicates severe blur.
+    Higher value means sharper image; low value (< 35.0) indicates severe blur.
     """
     laplacian = cv2.Laplacian(gray, cv2.CV_64F)
     variance = float(laplacian.var())
     return variance
 
 
-def check_sharpness(gray: np.ndarray, min_sharpness: float = 35.0) -> float:
+def check_sharpness(gray: np.ndarray, min_sharpness: float = 30.0) -> float:
     """Verifies that the image is sharp enough to read."""
     var = compute_blur_metric(gray)
     if var < min_sharpness:
@@ -86,7 +94,7 @@ def normalize_illumination(gray: np.ndarray) -> np.ndarray:
 
 def preprocess_image(
     image: np.ndarray,
-    min_sharpness: float = 30.0,
+    min_sharpness: float = 25.0,
     check_blur: bool = True
 ) -> Dict[str, Any]:
     """
@@ -110,13 +118,7 @@ def preprocess_image(
             {"sharpness": round(sharpness, 2), "threshold": min_sharpness}
         )
 
-    # Illumination normalized version
-    normalized_gray = normalize_illumination(gray)
-
     return {
-        "color": image,
         "gray": gray,
-        "normalized_gray": normalized_gray,
         "sharpness": round(sharpness, 2),
-        "dimensions": {"width": image.shape[1], "height": image.shape[0]}
     }
