@@ -1,0 +1,22 @@
+{
+  "name": "omr-server",
+  "version": "1.0.0",
+  "description": "Express REST backend for OMR Exam & Evaluation Management",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --test tests/**/*.test.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "mongoose": "^8.9.5",
+    "multer": "^1.4.5-lts.1",
+    "tesseract.js": "^7.0.0",
+    "zod": "^4.6.7"
+  }
+}
