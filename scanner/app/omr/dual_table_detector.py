@@ -240,24 +240,31 @@ def evaluate_dual_table_omr(
         sorted_fills = sorted(fill_vals, reverse=True)
         runner_up = sorted_fills[1] if len(sorted_fills) > 1 else 0.0
 
-        # Classification thresholds
-        if max_fill < 0.22:
+        # Classification thresholds using relative brightness contrast
+        sorted_opts = sorted(options, key=lambda o: option_data[o]["avg_val"])
+        top_opt = sorted_opts[0]
+        second_opt = sorted_opts[1]
+        top_val = option_data[top_opt]["avg_val"]
+        second_val = option_data[second_opt]["avg_val"]
+        contrast = second_val - top_val
+
+        if top_val > 110.0 or contrast < 20.0:
             status = "BLANK"
             classified_ans = None
             blank_count += 1
-        elif max_fill >= 0.38 and (max_fill - runner_up >= 0.12):
-            status = "CONFIDENT"
-            classified_ans = best_opt
-        elif max_fill >= 0.35 and runner_up >= 0.30:
+        elif second_val < 95.0 and contrast < 25.0:
             status = "MULTIPLE_MARKED"
             classified_ans = best_opt
             multiple_count += 1
             review_required.append(q)
-        else:
+        elif contrast < 35.0:
             status = "AMBIGUOUS"
             classified_ans = best_opt
             ambiguous_count += 1
             review_required.append(q)
+        else:
+            status = "CONFIDENT"
+            classified_ans = top_opt
 
         detected_answers[str(q)] = classified_ans
         classified_questions.append({
