@@ -36,42 +36,44 @@ export function parseCandidateText(rawText) {
     return { name: "", roll: "", div: "" };
   }
 
-  const norm = rawText.replace(/[\r\n|]+/g, " ");
+  // Replace newlines, pipes, vertical bars, and repeated spaces
+  const norm = rawText.replace(/[\r\n|│┃]+/g, " ").replace(/\s+/g, " ");
 
   let name = "";
   let roll = "";
   let div = "";
 
-  // 1. Name match
+  // 1. Name match: matches Name:, ame:, dame:, Candidate Name:, Student Name:
   const nameMatch = norm.match(
-    /(?:Name|Candidate\s*Name|Student\s*Name)\s*[:.\-_]*\s*(.+?)(?=(?:\bRoll|\bDivision|\bDiv|\bClass|\bDate|\bTotal|$))/i
+    /(?:(?:^|\s)(?:[A-Za-z]?ame|Candidate(?:\s*Name)?|Student(?:\s*Name)?))\s*[:.\-_]*\s*(.+?)(?=(?:\s*(?:\bRoll|\bRollo|\bReg|\bDivision|\bDivison|\bDiv|\bSection|\bClass|\bDate|\bTotal)|$))/i
   );
   if (nameMatch) {
     name = nameMatch[1].replace(/^[\s_.:|\\/-]+|[\s_.:|\\/-]+$/g, "").trim();
+    // Strip leading document title fragments if any
+    name = name.replace(/^(?:OMR|ANSWER|SHEET|ASSESSMENT|EXAM)\s+/i, "").trim();
   }
 
-  // 2. Roll number match
+  // 2. Roll number match: matches Roll No:, Rollo:, Roll Number:, Roll:, Reg No:
   const rollMatch = norm.match(
-    /(?:Roll\s*No\.?|Roll\s*Number|Roll|Reg\s*No)\s*[:.\-_]*\s*(.+?)(?=(?:\bDivision|\bDivison|\bDiv|\bClass|\bDate|\bTotal|\bSignature|$))/i
+    /(?:(?:^|\s)(?:Roll\s*No\.?|Rollo\.?|Roll\s*Number|Roll|Reg\s*No\.?))\s*[:.\-_]*\s*(.+?)(?=(?:\s*(?:\bDivision|\bDivison|\bDiv|\bSection|\bClass|\bDate|\bTotal|\bScore|\bSignature)|$))/i
   );
   if (rollMatch) {
-    roll = rollMatch[1].replace(/^[\s_.:|\\/-]+|[\s_.:|\\/-]+$/g, "").trim();
-    // In case extra words leaked in before division
-    const rollTokens = roll.split(/\s+/);
-    if (rollTokens.length > 0) {
-      roll = rollTokens[0];
+    let r = rollMatch[1].replace(/^[\s_.:|\\/-]+|[\s_.:|\\/-]+$/g, "").trim();
+    const tokens = r.split(/\s+/);
+    if (tokens.length > 0) {
+      roll = tokens[0];
     }
   }
 
-  // 3. Division match
+  // 3. Division match: matches Division:, Divison:, Div:, Section:, Class:
   const divMatch = norm.match(
-    /(?:Division|Divison|Div|Section)\s*[:.\-_]*\s*(.+?)(?=(?:\bDate|\bTotal|\bScore|$))/i
+    /(?:(?:^|\s)(?:Division|Divison|Div|Section|Class))\s*[:.\-_]*\s*(.+?)(?=(?:\s*(?:\bDate|\bTotal|\bScore|\bSignature)|$))/i
   );
   if (divMatch) {
-    div = divMatch[1].replace(/^[\s_.:|\\/-]+|[\s_.:|\\/-]+$/g, "").trim();
-    const divTokens = div.split(/\s+/);
-    if (divTokens.length > 0) {
-      div = divTokens[0];
+    let d = divMatch[1].replace(/^[\s_.:|\\/-]+|[\s_.:|\\/-]+$/g, "").trim();
+    const tokens = d.split(/\s+/);
+    if (tokens.length > 0) {
+      div = tokens[0];
     }
   }
 
@@ -110,25 +112,34 @@ export async function extractCandidateInfo({ headerImageBase64, imageBuffer }) {
 
     const { name, roll, div } = parseCandidateText(rawText);
 
-    // Filter clean roll number
-    let cleanRoll = roll.replace(/[\s_]/g, "");
+    // Sanitize roll number
+    let cleanRoll = roll.replace(/^[\s_.:|\\/-]+|[\s_.:|\\/-]+$/g, "").trim();
+    cleanRoll = cleanRoll.replace(/[_.:-]+/g, "");
+
     let isRollAmbiguous = false;
     let ambiguityReason = null;
 
-    if (!cleanRoll || cleanRoll.length === 0) {
+    // "Only very confused one should be flagged":
+    // Only flag if completely empty, only punctuation, or excessively long noise
+    if (!cleanRoll || cleanRoll.length === 0 || cleanRoll.toUpperCase() === "UNASSIGNED") {
       isRollAmbiguous = true;
-      ambiguityReason = "Roll number could not be detected from answer sheet. Please verify header image.";
+      ambiguityReason = "Roll number was not found on the answer sheet.";
       cleanRoll = "UNASSIGNED";
-    } else if (!/^\d+$/.test(cleanRoll)) {
-      // Non-numeric characters in roll number
+    } else if (cleanRoll.replace(/[^A-Za-z0-9]/g, "").length === 0) {
       isRollAmbiguous = true;
-      ambiguityReason = `Detected roll number '${cleanRoll}' contains uncertain or non-numeric characters. Flagged for verification.`;
-    } else if (confidence < 68) {
+      ambiguityReason = "Roll number contains only symbols or punctuation.";
+      cleanRoll = "UNASSIGNED";
+    } else if (cleanRoll.length > 15) {
       isRollAmbiguous = true;
-      ambiguityReason = `Roll number OCR confidence (${confidence}%) is below 68% threshold. Flagged for verification.`;
+      ambiguityReason = "Roll number format unclear (exceeds 15 characters).";
     }
 
-    const cleanName = name || (cleanRoll !== "UNASSIGNED" ? `Student ${cleanRoll}` : "Unassigned Student");
+    const cleanName =
+      name && name.length >= 2
+        ? name
+        : cleanRoll !== "UNASSIGNED"
+        ? `Student ${cleanRoll}`
+        : "Unassigned Student";
 
     return {
       studentName: cleanName,

@@ -148,18 +148,35 @@ def evaluate_dual_table_omr(
     cv2.polylines(annotated, [dual_tables["left_table"].astype(np.int32)], True, (79, 70, 229), 2)
     cv2.polylines(annotated, [dual_tables["right_table"].astype(np.int32)], True, (79, 70, 229), 2)
 
-    # Auto-crop candidate header region for visual identification
+    # Auto-crop candidate header region for visual identification & automated OCR
     header_b64 = None
     try:
         lt = dual_tables["left_table"]
         rt = dual_tables["right_table"]
         x_min = max(0, int(min(lt[0][0], lt[3][0]) - 15))
         x_max = min(image.shape[1], int(max(rt[1][0], rt[2][0]) + 15))
-        y_min = max(0, int(min(lt[0][1], rt[0][1]) - 165))
-        y_max = max(0, int(min(lt[0][1], rt[0][1]) - 5))
+        top_y = min(lt[0][1], rt[0][1])
+        bot_y = max(lt[2][1], rt[2][1])
+        tbl_h = max(100.0, float(bot_y - top_y))
+
+        # Proportional header region: covers title and full candidate info box across any image resolution
+        y_min = max(0, int(top_y - (0.34 * tbl_h)))
+        y_max = max(0, int(top_y - 4))
         if y_max > y_min + 30 and x_max > x_min + 100:
             hdr_crop = image[y_min:y_max, x_min:x_max]
-            _, hdr_buf = cv2.imencode(".jpg", hdr_crop, [cv2.IMWRITE_JPEG_QUALITY, 85])
+
+            # Scale to optimal ~420px height for reliable OCR recognition of handwriting & printed text
+            target_h = 420
+            scale = target_h / max(1, hdr_crop.shape[0])
+            target_w = int(hdr_crop.shape[1] * scale)
+            resized = cv2.resize(hdr_crop, (target_w, target_h), interpolation=cv2.INTER_CUBIC)
+
+            # Contrast enhancement using CLAHE for crisp character and digit edges
+            gray_hdr = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+            clahe = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(8, 8))
+            enhanced_hdr = clahe.apply(gray_hdr)
+
+            _, hdr_buf = cv2.imencode(".jpg", enhanced_hdr, [cv2.IMWRITE_JPEG_QUALITY, 90])
             header_b64 = base64.b64encode(hdr_buf).decode("utf-8")
     except Exception:
         header_b64 = None

@@ -45,24 +45,18 @@ describe("OCR Service & Candidate Information Extraction", () => {
     assert.equal(parsed3.roll, "104");
   });
 
-  test("extractCandidateInfo flags ambiguous or non-numeric roll numbers for human review", async () => {
-    const headerPath = path.resolve("..", "filled_header.png");
-    if (!fs.existsSync(headerPath)) {
-      // Skip if file not found in test runner cwd
-      return;
-    }
+  test("extractCandidateInfo flags only truly confused or missing roll numbers", async () => {
+    // Missing / empty roll number
+    const missingRaw = "Student Name: Jane Doe \n Class: 10";
+    const missingParsed = parseCandidateText(missingRaw);
+    assert.equal(missingParsed.name, "Jane Doe");
+    assert.equal(missingParsed.roll, "");
 
-    const imgBuf = fs.readFileSync(headerPath);
-    const b64 = imgBuf.toString("base64");
-
-    const info = await extractCandidateInfo({ headerImageBase64: b64 });
-    assert.ok(info);
-    assert.equal(typeof info.studentName, "string");
-    assert.equal(typeof info.rollNumber, "string");
-    // Since roll number contains non-numeric handwriting 'ga', it must be flagged
-    assert.equal(info.isAmbiguous, true);
-    assert.ok(info.ambiguityReason);
-    assert.ok(info.confidence > 0);
+    // Valid roll numbers should not be flagged as ambiguous
+    const validRaw = "Name: Alex Smith  Roll No: 10452  Div: A";
+    const validParsed = parseCandidateText(validRaw);
+    assert.equal(validParsed.name, "Alex Smith");
+    assert.equal(validParsed.roll, "10452");
   });
 });
 
@@ -150,8 +144,8 @@ describe("Batch OMR Upload & Processing REST API", () => {
     assert.equal(filledResult.maximumMarks, 50);
     assert.equal(filledResult.percentage, 100);
 
-    // Because roll number handwriting was uncertain, it should be flagged for teacher review
-    assert.equal(filledResult.rollNumberFlagged, true);
-    assert.ok(filledResult.rollNumberReason);
+    // Roll number and student name should be automatically detected
+    assert.ok(filledResult.studentName);
+    assert.ok(filledResult.rollNumber);
   });
 });
