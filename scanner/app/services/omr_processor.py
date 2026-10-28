@@ -1,7 +1,7 @@
 """
 OMR End-to-End Processing Engine.
-Orchestrates preprocessing, marker detection, homography perspective warping,
-bubble radiometric measurement, and answer classification.
+Orchestrates preprocessing, resilient alignment (corner markers, paper boundary, dual tables),
+bubble radiometric measurement, answer classification, and candidate OCR.
 Also generates annotated diagnostic visualizations.
 """
 
@@ -19,11 +19,14 @@ from scanner.app.omr.preprocessing import (
 from scanner.app.omr.marker_detection import (
     find_corner_markers,
     find_marker_candidates,
+    detect_paper_sheet,
     MarkerDetectionError,
 )
 from scanner.app.omr.dual_table_detector import (
     detect_dual_tables,
     evaluate_dual_table_omr,
+    check_table_grid_lines,
+    order_points,
 )
 from scanner.app.omr.perspective import warp_to_canonical
 from scanner.app.omr.bubble_detection import inspect_all_bubbles
@@ -47,9 +50,16 @@ class OMRProcessor:
         image_input: Union[bytes, np.ndarray],
         generate_annotated: bool = True,
         check_blur: bool = True,
+        total_questions: Optional[int] = None,
+        template_type: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Executes the full OMR pipeline on an input image.
+        Executes the resilient OMR pipeline on an input image.
+        Uses a multi-tier alignment hierarchy:
+        1. Question table / dual column detection (School 20Q or 25Q layouts)
+        2. Corner alignment markers (4, 3, or 2 markers with geometric reconstruction)
+        3. Full paper sheet boundary contour (document edge detection against surface)
+
         image_input: raw file bytes or BGR numpy array.
         Returns structured scan results with detected answers and diagnostics.
         """
@@ -66,86 +76,226 @@ class OMRProcessor:
         gray = prep["gray"]
         sharpness = prep["sharpness"]
 
-        # 3. Detect Alignment Features
-        # Try base orientation first
-        markers = None
-        try:
-            markers = find_corner_markers(gray)
-        except MarkerDetectionError:
-            markers = None
+        h, w = image.shape[:2]
 
-        if markers is None:
-            dual_tables = detect_dual_tables(gray)
-            if dual_tables is not None:
-                top_y = min(dual_tables["left_table"][0][1], dual_tables["right_table"][0][1])
-                if top_y > 80:
+        # Intelligent orientation ordering:
+        rotations = [0, 180, 270, 90] if h >= w else [0, 90, 270, 180]
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+            ocr_quick = RapidOCR()
+            top_sample = image[:int(h * 0.25), :]
+            bot_sample = image[int(h * 0.75):, :]
+            r_top, _ = ocr_quick(top_sample)
+            r_bot, _ = ocr_quick(bot_sample)
+            txt_top = " ".join([r[1] for r in r_top]) if r_top else ""
+            txt_bot = " ".join([r[1] for r in r_bot]) if r_bot else ""
+            kw = ["OMR", "NAME", "ROLL", "DIVISION", "DATE", "SCORE", "TOTAL", "MARKS"]
+            top_score = sum(1 for k in kw if k in txt_top.upper())
+            bot_score = sum(1 for k in kw if k in txt_bot.upper())
+            if bot_score > top_score + 1:
+                rotations = [180, 0, 270, 90] if h >= w else [180, 90, 270, 0]
+        except Exception:
+            pass
+
+        is_school_request = (total_questions is not None and total_questions <= 25) or (
+            template_type and ("SCHOOL" in str(template_type).upper() or "20" in str(template_type) or "25" in str(template_type))
+        )
+
+        for angle in rotations:
+            if angle == 0:
+                cur_img = image
+                cur_gray = gray
+            elif angle == 90:
+                cur_img = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+                cur_gray = cv2.cvtColor(cur_img, cv2.COLOR_BGR2GRAY) if len(cur_img.shape) == 3 else cur_img
+            elif angle == 180:
+                cur_img = cv2.rotate(image, cv2.ROTATE_180)
+                cur_gray = cv2.cvtColor(cur_img, cv2.COLOR_BGR2GRAY) if len(cur_img.shape) == 3 else cur_img
+            elif angle == 270:
+                cur_img = cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+                cur_gray = cv2.cvtColor(cur_img, cv2.COLOR_BGR2GRAY) if len(cur_img.shape) == 3 else cur_img
+
+            # If school format explicitly requested (<= 25 questions), prioritize dual table detection
+            if is_school_request:
+                dual_tables = detect_dual_tables(cur_gray)
+                if dual_tables is not None:
                     res = evaluate_dual_table_omr(
-                        image=image,
+                        image=cur_img,
                         dual_tables=dual_tables,
                         generate_annotated=generate_annotated,
                         sharpness=sharpness,
+                        total_questions=total_questions,
                     )
                     elapsed_ms = round((time.perf_counter() - start_time) * 1000, 1)
                     res["diagnostics"]["processing_time_ms"] = elapsed_ms
+                    res["diagnostics"]["alignment_strategy"] = res["diagnostics"].get("template_type", "SCHOOL_DUAL_TABLE")
                     return res
 
-        # If not found at base orientation, try alternate rotations (90, 180, 270)
-        if markers is None:
-            h, w = image.shape[:2]
-            alt_angles = [270, 90, 180] if w > h else [90, 270, 180]
-            for angle in alt_angles:
-                if angle == 90:
-                    rot_img = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
-                elif angle == 180:
-                    rot_img = cv2.rotate(image, cv2.ROTATE_180)
-                elif angle == 270:
-                    rot_img = cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            # Strategy 1: Corner Alignment Markers (4, 3, or 2 markers with auto-reconstruction)
+            # Default for standard 30Q template sheets
+            markers = None
+            try:
+                markers = find_corner_markers(cur_gray)
+            except MarkerDetectionError:
+                markers = None
 
-                rot_gray = cv2.cvtColor(rot_img, cv2.COLOR_BGR2GRAY) if len(rot_img.shape) == 3 else rot_img
+            if markers is not None and not is_school_request:
+                return self._process_canonical_aligned(
+                    image=cur_img,
+                    markers=markers,
+                    generate_annotated=generate_annotated,
+                    sharpness=sharpness,
+                    start_time=start_time,
+                    alignment_strategy="CORNER_MARKERS",
+                )
 
-                try:
-                    markers = find_corner_markers(rot_gray)
-                except MarkerDetectionError:
-                    markers = None
+            # Strategy 2: Question Table / Dual Column Detection (School 20Q/25Q or 30Q dual columns)
+            dual_tables = detect_dual_tables(cur_gray)
+            if dual_tables is not None:
+                # Check if it matches Canonical 30Q dual columns:
+                if "grid_layout" in self.config and "column_1_box" in self.config["grid_layout"] and not is_school_request:
+                    warped_color = self._warp_by_dual_columns_30q(cur_img, dual_tables)
+                    if warped_color is not None:
+                        warped_gray = cv2.cvtColor(warped_color, cv2.COLOR_BGR2GRAY)
+                        measurements = inspect_all_bubbles(warped_gray, self.config)
+                        classified_questions = self.classifier.classify_all(measurements)
+                        confident = sum(1 for q in classified_questions if q["status"] == "CONFIDENT")
+                        if confident > 0:
+                            return self._process_canonical_from_warped(
+                                warped_color=warped_color,
+                                classified_questions=classified_questions,
+                                generate_annotated=generate_annotated,
+                                sharpness=sharpness,
+                                start_time=start_time,
+                                alignment_strategy="DUAL_COLUMNS_30Q",
+                            )
 
-                if markers is not None:
-                    image = rot_img
-                    gray = rot_gray
-                    break
+                res = evaluate_dual_table_omr(
+                    image=cur_img,
+                    dual_tables=dual_tables,
+                    generate_annotated=generate_annotated,
+                    sharpness=sharpness,
+                    total_questions=total_questions,
+                )
+                elapsed_ms = round((time.perf_counter() - start_time) * 1000, 1)
+                res["diagnostics"]["processing_time_ms"] = elapsed_ms
+                res["diagnostics"]["alignment_strategy"] = res["diagnostics"].get("template_type", "SCHOOL_DUAL_TABLE")
+                return res
 
-                dual_tables = detect_dual_tables(rot_gray)
-                if dual_tables is not None:
-                    top_y = min(dual_tables["left_table"][0][1], dual_tables["right_table"][0][1])
-                    if top_y > 80:
+            # Strategy 3: Document / Paper Sheet Boundary Contour Detection
+            paper_markers = detect_paper_sheet(cur_gray, config=self.config)
+            if paper_markers is not None:
+                if is_school_request or (total_questions is not None and total_questions <= 20):
+                    p_tables = detect_dual_tables(cur_gray)
+                    if p_tables is not None:
                         res = evaluate_dual_table_omr(
-                            image=rot_img,
-                            dual_tables=dual_tables,
+                            image=cur_img,
+                            dual_tables=p_tables,
                             generate_annotated=generate_annotated,
                             sharpness=sharpness,
+                            total_questions=total_questions,
                         )
                         elapsed_ms = round((time.perf_counter() - start_time) * 1000, 1)
                         res["diagnostics"]["processing_time_ms"] = elapsed_ms
+                        res["diagnostics"]["alignment_strategy"] = "PAPER_BOUNDARY_DUAL_TABLE"
                         return res
 
-        if markers is None:
-            raise MarkerDetectionError(
-                "MARKER_NOT_FOUND",
-                "Could not locate four corner alignment markers or dual question tables in image. "
-                "Please ensure the entire answer sheet is fully visible, well-lit, and uncropped."
-            )
+                return self._process_canonical_aligned(
+                    image=cur_img,
+                    markers=paper_markers,
+                    generate_annotated=generate_annotated,
+                    sharpness=sharpness,
+                    start_time=start_time,
+                    alignment_strategy="PAPER_BOUNDARY",
+                )
 
-        # 4. Perspective Correction to Canonical System
+        # If all orientations and all strategies failed:
+        raise MarkerDetectionError(
+            "MARKER_NOT_FOUND",
+            "Could not locate question tables, MCQ bubbles, or sheet boundaries in the image. "
+            "Please ensure the question area and student details are clearly visible, flat, and well-lit.",
+            {"rotations_tried": rotations}
+        )
+
+    def _warp_by_dual_columns_30q(
+        self,
+        image: np.ndarray,
+        dual_tables: Dict[str, np.ndarray],
+    ) -> Optional[np.ndarray]:
+        """Warps image into canonical space using the outer boundaries of the two question columns."""
+        try:
+            lt = order_points(dual_tables["left_table"])
+            rt = order_points(dual_tables["right_table"])
+
+            scale_x = self.config["page"]["scale_x"]
+            scale_y = self.config["page"]["scale_y"]
+            c1 = self.config["grid_layout"]["column_1_box"]
+            c2 = self.config["grid_layout"]["column_2_box"]
+
+            c1_x1 = c1["x_pt"] * scale_x
+            c1_y1 = c1["y_pt"] * scale_y
+            c2_x2 = (c2["x_pt"] + c2["width_pt"]) * scale_x
+            c2_y2 = (c2["y_pt"] + c2["height_pt"]) * scale_y
+
+            src_pts = np.float32([lt[0], rt[1], rt[2], lt[3]])
+            dst_pts = np.float32([
+                [c1_x1, c1_y1],
+                [c2_x2, c1_y1],
+                [c2_x2, c2_y2],
+                [c1_x1, c2_y2],
+            ])
+
+            H = cv2.getPerspectiveTransform(src_pts, dst_pts)
+            canonical_w = self.config["page"]["canonical_width_px"]
+            canonical_h = self.config["page"]["canonical_height_px"]
+            warped = cv2.warpPerspective(
+                image,
+                H,
+                (canonical_w, canonical_h),
+                flags=cv2.INTER_LANCZOS4,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=(255, 255, 255),
+            )
+            return warped
+        except Exception:
+            return None
+
+    def _process_canonical_aligned(
+        self,
+        image: np.ndarray,
+        markers: Dict[str, Tuple[float, float]],
+        generate_annotated: bool,
+        sharpness: float,
+        start_time: float,
+        alignment_strategy: str = "CORNER_MARKERS",
+    ) -> Dict[str, Any]:
         warp_res = warp_to_canonical(image, markers, self.config)
         warped_color = warp_res["warped"]
         warped_gray = cv2.cvtColor(warped_color, cv2.COLOR_BGR2GRAY)
 
-        # 5. Inspect Bubble Regions
         measurements = inspect_all_bubbles(warped_gray, self.config)
-
-        # 6. Classify Answers
         classified_questions = self.classifier.classify_all(measurements)
 
-        # 7. Aggregate Statistics
+        return self._process_canonical_from_warped(
+            warped_color=warped_color,
+            classified_questions=classified_questions,
+            generate_annotated=generate_annotated,
+            sharpness=sharpness,
+            start_time=start_time,
+            alignment_strategy=alignment_strategy,
+            detected_markers=markers,
+        )
+
+    def _process_canonical_from_warped(
+        self,
+        warped_color: np.ndarray,
+        classified_questions: List[Dict[str, Any]],
+        generate_annotated: bool,
+        sharpness: float,
+        start_time: float,
+        alignment_strategy: str,
+        detected_markers: Optional[Dict[str, Tuple[float, float]]] = None,
+    ) -> Dict[str, Any]:
         detected_answers = {}
         blank_count = 0
         multiple_marked_count = 0
@@ -171,7 +321,7 @@ class OMRProcessor:
         total_questions = len(classified_questions)
         is_review_required = len(review_required_questions) > 0
 
-        # 7b. Candidate Info Extraction for Canonical Sheets
+        # Candidate Info Extraction for Canonical Sheets
         header_b64 = None
         candidate_info = {
             "student_name": "Unassigned Student",
@@ -190,7 +340,6 @@ class OMRProcessor:
         except Exception:
             header_b64 = None
 
-        # 8. Annotated Visualization (Optional)
         annotated_b64 = None
         if generate_annotated:
             annotated_img = self._create_annotated_image(warped_color, classified_questions)
@@ -201,7 +350,7 @@ class OMRProcessor:
 
         return {
             "success": True,
-            "template_version": self.config["template_version"],
+            "template_version": self.config.get("template_version", "OMR-V1.0"),
             "total_questions": total_questions,
             "detected_answers": detected_answers,
             "summary": {
@@ -217,7 +366,8 @@ class OMRProcessor:
             "diagnostics": {
                 "processing_time_ms": elapsed_ms,
                 "sharpness_score": sharpness,
-                "detected_markers": markers,
+                "detected_markers": detected_markers,
+                "alignment_strategy": alignment_strategy,
                 "canonical_dimensions": self.config["page"]["canonical_width_px"],
                 "annotated_image_base64": annotated_b64,
                 "header_image_base64": header_b64,
@@ -239,17 +389,17 @@ class OMRProcessor:
             q_num = q["question_number"]
             status = q["status"]
             sel = q["selected_option"]
+            if q_num > len(self.config["questions"]):
+                continue
             q_spec = self.config["questions"][q_num - 1]
 
             if status == "CONFIDENT" and sel:
-                # Green circle around chosen bubble
                 b_info = q_spec["bubbles"][sel]
                 cx = int(round(b_info["cx_px"]))
                 cy = int(round(b_info["cy_px"]))
                 cv2.circle(annotated, (cx, cy), radius + 4, (0, 200, 0), 2, cv2.LINE_AA)
 
             elif status == "AMBIGUOUS":
-                # Yellow circle around ambiguous bubbles
                 for opt, opt_data in q["options"].items():
                     if opt_data["composite_score"] >= self.classifier.light_threshold:
                         b_info = q_spec["bubbles"][opt]
@@ -258,7 +408,6 @@ class OMRProcessor:
                         cv2.circle(annotated, (cx, cy), radius + 5, (0, 215, 255), 2, cv2.LINE_AA)
 
             elif status == "MULTIPLE_MARKED":
-                # Red circles around all filled bubbles
                 for opt in q.get("marked_options", []):
                     b_info = q_spec["bubbles"][opt]
                     cx = int(round(b_info["cx_px"]))

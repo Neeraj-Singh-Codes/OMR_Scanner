@@ -37,6 +37,8 @@ export const processScan = async (req, res, next) => {
         params: {
           return_annotated: true,
           check_blur: true,
+          total_questions: exam?.totalQuestions,
+          template_type: exam?.templateType,
         },
         timeout: 60000,
       });
@@ -53,7 +55,7 @@ export const processScan = async (req, res, next) => {
 
       // Preserve image intact in database so user can view it and fulfill details manually
       const errData = cvErr.response?.data;
-      const message = errData?.message || cvErr.message || "Could not automatically locate alignment markers or table borders";
+      const message = errData?.message || cvErr.message || "Could not automatically locate question tables or sheet content";
       const errorCode = errData?.error_code || "PROCESSING_ERROR";
       const fileBase64 = req.file.buffer.toString("base64");
 
@@ -386,7 +388,12 @@ export const processBatchScans = async (req, res, next) => {
 
             const cvResponse = await axios.post(`${VISION_SERVICE_URL}/scan`, formData, {
               headers: { "Content-Type": "multipart/form-data" },
-              params: { return_annotated: true, check_blur: true },
+              params: {
+                return_annotated: true,
+                check_blur: true,
+                total_questions: exam?.totalQuestions,
+                template_type: exam?.templateType,
+              },
               timeout: 60000,
             });
 

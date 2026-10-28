@@ -169,7 +169,7 @@ export const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose
 
               <div className="absolute inset-x-0 bottom-4 text-center">
                 <span className="bg-black/60 backdrop-blur text-white text-xs px-3 py-1.5 rounded-full font-medium">
-                  Ensure 4 black corner squares are visible
+                  Align sheet within frame • Questions and details will auto-detect
                 </span>
               </div>
             </div>

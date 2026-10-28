@@ -1,7 +1,8 @@
 """
 Automated Computer Vision and OMR Pipeline Tests.
 Validates clean sheets, blank sheets, multiple marks, light shading, erasures,
-photographed perspective distortion, and failure mode rejections.
+photographed perspective distortion, resilient missing-corner reconstruction,
+paper boundary detection, and failure mode rejections.
 """
 
 import cv2
@@ -29,7 +30,6 @@ def test_clean_30_questions_all_filled(processor, generator):
     Test 1: Clean, correctly filled sheet with 30 known answers.
     Must achieve 100% detection accuracy on all 30 questions.
     """
-    # Define an alternating answer key for all 30 questions
     expected_answers = {}
     options_cycle = ["A", "B", "C", "D"]
     for q_num in range(1, 31):
@@ -45,7 +45,6 @@ def test_clean_30_questions_all_filled(processor, generator):
     assert result["summary"]["ambiguous_count"] == 0
     assert result["summary"]["review_required"] is False
 
-    # Check each question answer matches exactly
     for q_num in range(1, 31):
         detected = result["detected_answers"][str(q_num)]
         expected = expected_answers[q_num]
@@ -86,7 +85,6 @@ def test_multiple_marked_question(processor, generator):
     assert result["detected_answers"]["1"] == "A"
     assert result["detected_answers"]["10"] == "C"
 
-    # Q5 checks
     q5 = result["questions"][4]
     assert q5["status"] == "MULTIPLE_MARKED"
     assert q5["review_required"] is True
@@ -122,7 +120,6 @@ def test_erased_answer_resolved_correctly(processor, generator):
         12: "C",  # Firmly darkened C
     }
     img = generator.generate_sheet_with_responses(responses)
-    # Add a faint erased mark to option A of Q12
     generator.fill_bubble(img, 12, "A", fill_type="ERASED")
 
     result = processor.process_image(img, generate_annotated=False)
@@ -150,7 +147,6 @@ def test_camera_capture_perspective_and_lighting(processor, generator):
     }
     canonical_sheet = generator.generate_sheet_with_responses(known_responses)
 
-    # Simulate mobile camera capture: 2.5 deg rotation, perspective tilt, lighting gradient
     camera_photo = generator.simulate_camera_capture(
         canonical_sheet,
         rotation_deg=2.5,
@@ -165,38 +161,52 @@ def test_camera_capture_perspective_and_lighting(processor, generator):
     assert result["success"] is True
     assert result["annotated_image_base64"] is not None
 
-    # Verify answers across different quadrants of the tilted sheet
     for q_num, expected in known_responses.items():
         detected = result["detected_answers"][str(q_num)]
         assert detected == expected, f"Camera capture: Q{q_num} expected {expected}, got {detected}"
 
 
-def test_rejection_missing_corner_marker(processor, generator):
+def test_resilient_missing_corner_marker_recovery(processor, generator):
     """
-    Test 7: Missing alignment marker (cropped or obscured corner).
-    Must raise MarkerDetectionError and reject scan.
+    Test 7: Missing/obscured alignment marker (e.g. finger/thumb covering corner).
+    Must automatically reconstruct the missing marker via geometric completion
+    and scan successfully with 100% accuracy.
     """
-    img = generator.generate_base_canonical_image()
-    # Corrupt the Top-Left marker by whiting it out
+    known_responses = {q: ["A", "B", "C", "D"][(q - 1) % 4] for q in range(1, 31)}
+    img = generator.generate_sheet_with_responses(known_responses)
+
+    # Corrupt the Top-Left marker (simulate finger / thumb covering it)
     tl = processor.config["markers"]["top_left"]
     cx = int(round(tl["cx_px"]))
     cy = int(round(tl["cy_px"]))
     m_size = int(round(processor.config["markers"]["size_px"]))
-    cv2.rectangle(img, (cx - m_size, cy - m_size), (cx + m_size, cy + m_size), (255, 255, 255), -1)
+    cv2.rectangle(img, (cx - m_size, cy - m_size), (cx + m_size, cy + m_size), (180, 150, 120), -1)
 
+    result = processor.process_image(img, generate_annotated=True)
+    assert result["success"] is True
+    assert result["total_questions"] == 30
+    for q_num, expected in known_responses.items():
+        assert result["detected_answers"][str(q_num)] == expected
+
+
+def test_rejection_no_omr_content(processor):
+    """
+    Test 8: Sharp image with no OMR content, tables, or markers at all (e.g. textured random noise).
+    Must raise MarkerDetectionError.
+    """
+    np.random.seed(42)
+    textured = np.random.randint(100, 200, (800, 800, 3), dtype=np.uint8)
     with pytest.raises(MarkerDetectionError) as exc_info:
-        processor.process_image(img)
-
-    assert exc_info.value.code in ["MARKER_NOT_FOUND", "MARKER_ORIENTATION_INVALID"]
+        processor.process_image(textured, check_blur=True)
+    assert exc_info.value.code == "MARKER_NOT_FOUND"
 
 
 def test_rejection_excessive_blur(processor, generator):
     """
-    Test 8: Severely blurred image.
+    Test 9: Severely blurred image.
     Must raise PreprocessingError with code IMAGE_BLURRY.
     """
     img = generator.generate_base_canonical_image()
-    # Apply severe Gaussian blur
     blurry = cv2.GaussianBlur(img, (45, 45), 0)
 
     with pytest.raises(PreprocessingError) as exc_info:

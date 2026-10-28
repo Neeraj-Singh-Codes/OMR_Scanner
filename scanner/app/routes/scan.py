@@ -91,6 +91,8 @@ async def scan_omr_sheet(
     file: UploadFile = File(..., description="Uploaded photograph or camera capture"),
     return_annotated: bool = Query(True, description="Whether to include base64 annotated image"),
     check_blur: bool = Query(True, description="Whether to reject blurry images"),
+    total_questions: Optional[int] = Query(None, description="Total expected questions in exam"),
+    template_type: Optional[str] = Query(None, description="Template format: STANDARD_30Q, SCHOOL_20Q, or SCHOOL_25Q"),
 ):
     """
     Scans an uploaded OMR sheet image, locates corner alignment markers,
@@ -110,6 +112,8 @@ async def scan_omr_sheet(
             image_input=contents,
             generate_annotated=return_annotated,
             check_blur=check_blur,
+            total_questions=total_questions,
+            template_type=template_type,
         )
         return JSONResponse(status_code=status.HTTP_200_OK, content=result)
 

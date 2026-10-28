@@ -122,6 +122,8 @@ const scanResultSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
+    toJSON: { flattenMaps: true },
+    toObject: { flattenMaps: true },
   }
 );
 
