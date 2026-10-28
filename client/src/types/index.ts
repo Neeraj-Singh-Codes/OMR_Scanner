@@ -67,6 +67,9 @@ export interface ScanResult {
   maximumMarks: number;
   percentage: number;
   scanMetadata?: {
+    isFailedScan?: boolean;
+    processingError?: string;
+    originalImageBase64?: string;
     sharpness?: number;
     processingTimeMs?: number;
     ambiguousQuestions?: number[];
@@ -120,6 +123,7 @@ export interface BatchItemResult {
   fileName: string;
   success: boolean;
   scanId?: string;
+  isFailedScan?: boolean;
   scanResult?: ScanResult;
   reviewRequired?: boolean;
   rollNumberFlagged?: boolean;

@@ -148,4 +148,83 @@ describe("Batch OMR Upload & Processing REST API", () => {
     assert.ok(filledResult.studentName);
     assert.ok(filledResult.rollNumber);
   });
+
+  test("Single scan keeps failed/unaligned sheet image intact in DB for manual entry", async () => {
+    // 1x1 dummy PNG image buffer that cannot be aligned by CV
+    const dummyPngBuffer = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
+
+    const formData = new FormData();
+    formData.append("examId", examId);
+    formData.append("image", new Blob([dummyPngBuffer], { type: "image/png" }), "failed_sheet.png");
+
+    const res = await fetch(`${baseUrl}/api/scans`, {
+      method: "POST",
+      body: formData,
+    });
+
+    // Should return 201 Created with the preserved image record
+    assert.equal(res.status, 201);
+    const data = await res.json();
+    assert.equal(data.success, true);
+    assert.equal(data.isFailedScan, true);
+    assert.ok(data.data._id);
+    assert.equal(data.data.reviewRequired, true);
+    assert.equal(data.data.scanMetadata.isFailedScan, true);
+    assert.ok(data.data.scanMetadata.annotatedImageBase64);
+    assert.equal(data.data.scanMetadata.annotatedImageBase64, dummyPngBuffer.toString("base64"));
+
+    // Verify GET /api/scans/:id returns this intact image
+    const getRes = await fetch(`${baseUrl}/api/scans/${data.data._id}`);
+    assert.equal(getRes.status, 200);
+    const getData = await getRes.json();
+    assert.equal(getData.data.scanMetadata.isFailedScan, true);
+    assert.equal(getData.data.scanMetadata.annotatedImageBase64, dummyPngBuffer.toString("base64"));
+
+    // Verify teacher can fulfill candidate details and answers manually
+    const reviewRes = await fetch(`${baseUrl}/api/scans/${data.data._id}/review`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        studentName: "Aditya Virendra Singh",
+        rollNumber: "23",
+        correctedAnswers: { "1": "C", "2": "C" },
+      }),
+    });
+    assert.equal(reviewRes.status, 200);
+    const reviewedData = await reviewRes.json();
+    assert.equal(reviewedData.data.studentName, "Aditya Virendra Singh");
+    assert.equal(reviewedData.data.rollNumber, "23");
+    assert.equal(reviewedData.data.score, 4); // 2 correct * 2 marks
+  });
+
+  test("Batch scan keeps failed sheet images intact in DB and provides review scanId", async () => {
+    const dummyPngBuffer = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
+
+    const formData = new FormData();
+    formData.append("examId", examId);
+    formData.append("images", new Blob([dummyPngBuffer], { type: "image/png" }), "batch_unaligned_sheet.png");
+
+    const res = await fetch(`${baseUrl}/api/scans/batch`, {
+      method: "POST",
+      body: formData,
+    });
+
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.success, true);
+    assert.equal(data.data.failedCount, 1);
+    assert.equal(data.data.reviewRequiredCount, 1);
+
+    const failedItem = data.data.results[0];
+    assert.equal(failedItem.fileName, "batch_unaligned_sheet.png");
+    assert.equal(failedItem.success, false);
+    assert.equal(failedItem.isFailedScan, true);
+    assert.ok(failedItem.scanId); // Crucial: scanId is created and preserved, not null or discarded
+
+    // Verify scan record in DB has preserved image
+    const getRes = await fetch(`${baseUrl}/api/scans/${failedItem.scanId}`);
+    assert.equal(getRes.status, 200);
+    const getData = await getRes.json();
+    assert.equal(getData.data.scanMetadata.annotatedImageBase64, dummyPngBuffer.toString("base64"));
+  });
 });

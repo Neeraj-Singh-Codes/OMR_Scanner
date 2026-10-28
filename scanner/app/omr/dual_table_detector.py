@@ -74,8 +74,20 @@ def detect_dual_tables(image: np.ndarray) -> Optional[Dict[str, np.ndarray]]:
                 continue
             peri = cv2.arcLength(c, True)
             approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+            pts = None
             if len(approx) == 4:
                 pts = approx.reshape(4, 2)
+            elif 4 < len(approx) <= 18:
+                # Approximate bounding box when thumb/shadow/crease touches border
+                min_rect = cv2.minAreaRect(c)
+                (rcx, rcy), (rw, rh), angle = min_rect
+                if rw > rh:
+                    rw, rh = rh, rw
+                raspect = rh / max(1.0, rw)
+                if 1.25 < raspect < 3.2:
+                    pts = cv2.boxPoints(min_rect)
+
+            if pts is not None:
                 rect = order_points(pts)
                 w_box = float(np.linalg.norm(rect[1] - rect[0]))
                 h_box = float(np.linalg.norm(rect[3] - rect[0]))
@@ -115,16 +127,30 @@ def detect_dual_tables(image: np.ndarray) -> Optional[Dict[str, np.ndarray]]:
                     area_ratio = min(c1["area"], c2["area"]) / max(c1["area"], c2["area"])
                     y_diff = abs(c1["cy"] - c2["cy"]) / float(H)
 
-                    if h_ratio > 0.65 and area_ratio > 0.45 and y_diff < 0.15:
+                    if h_ratio > 0.60 and area_ratio > 0.40 and y_diff < 0.18:
                         score = (h_ratio * 0.4) + (w_ratio * 0.3) + (area_ratio * 0.3) - (y_diff * 1.5)
                         if score > best_score:
                             best_score = score
                             best_pair = (c1, c2)
 
             if best_pair is not None:
-                # Confirm internal horizontal row grid lines exist in table
+                # Verification:
+                # 1) Either has horizontal row lines (school 25Q format with dips >= 5)
+                # 2) Or has internal bubble circles / dark ink (school 20Q unlined format)
                 dips = check_table_grid_lines(gray, best_pair[0]["pts"])
-                if dips >= 6:
+                if dips >= 5:
+                    return {
+                        "left_table": best_pair[0]["pts"],
+                        "right_table": best_pair[1]["pts"],
+                    }
+
+                # Check for presence of question contents (bubble circles, question numbers)
+                target_w, target_h = 200, 600
+                dst_chk = np.array([[0, 0], [target_w - 1, 0], [target_w - 1, target_h - 1], [0, target_h - 1]], dtype="float32")
+                M_chk = cv2.getPerspectiveTransform(best_pair[0]["pts"], dst_chk)
+                chk_warp = cv2.warpPerspective(gray, M_chk, (target_w, target_h))
+                std_dev = np.std(chk_warp[50:-50, 20:-20])
+                if std_dev > 10.0:
                     return {
                         "left_table": best_pair[0]["pts"],
                         "right_table": best_pair[1]["pts"],
@@ -165,9 +191,39 @@ def evaluate_dual_table_omr(
     warped_right = cv2.warpPerspective(gray, M_right, (target_w, target_h))
     M_right_inv = cv2.getPerspectiveTransform(dst_pts, order_points(dual_tables["right_table"]))
 
+    # Multi-channel ink map combining both darkness and blue/purple ink differential
+    if len(image.shape) == 3:
+        b, g, r = cv2.split(image)
+        ink_diff = cv2.subtract(b, r)
+        dark_gray = cv2.subtract(255, gray)
+        ink_map = cv2.addWeighted(ink_diff, 1.5, dark_gray, 0.5, 0)
+    else:
+        ink_map = cv2.subtract(255, gray)
+
+    warped_ink_left = cv2.warpPerspective(ink_map, M_left, (target_w, target_h))
+    warped_ink_right = cv2.warpPerspective(ink_map, M_right, (target_w, target_h))
+
+    # Auto-detect question count: 20Q (10 left, 10 right, unlined) vs 25Q (13 left, 12 right, horizontal grid lines)
+    grid_dips = check_table_grid_lines(gray, dual_tables["left_table"])
+    is_20q = (grid_dips < 16)
+    if is_20q:
+        q_count_left = 10
+        q_count_right = 10
+        total_q = 20
+        row_h_left = target_h / 10.0
+        row_h_right = target_h / 10.0
+        opt_x_centers = [125, 215, 305, 395]
+        template_ver = "SCHOOL-20Q-DUAL-TABLE"
+    else:
+        q_count_left = 13
+        q_count_right = 12
+        total_q = 25
+        row_h_left = target_h / 13.0
+        row_h_right = target_h / 12.0
+        opt_x_centers = [150, 250, 350, 450]
+        template_ver = "SCHOOL-25Q-DUAL-TABLE"
+
     options = ["A", "B", "C", "D"]
-    row_h_left = target_h / 13.0   # 13 questions in left table
-    row_h_right = target_h / 12.0  # 12 questions in right table
 
     detected_answers: Dict[str, Optional[str]] = {}
     classified_questions: List[Dict[str, Any]] = []
@@ -218,20 +274,25 @@ def evaluate_dual_table_omr(
             header_b64 = None
 
     # Helper function to process each question row
-    def process_question_row(q: int, warped_table: np.ndarray, y_center: int, M_inv: np.ndarray):
+    def process_question_row(q: int, warped_table: np.ndarray, warped_ink: np.ndarray, y_center: int, M_inv: np.ndarray):
         nonlocal blank_count, multiple_count, ambiguous_count
 
         option_data = {}
         for opt_idx, opt in enumerate(options):
-            x_min = int(100 + opt_idx * 100)
-            x_max = int(100 + (opt_idx + 1) * 100)
-            patch = warped_table[y_center - 25 : y_center + 25, x_min + 20 : x_max - 20]
-            avg_brightness = float(np.mean(patch))
-            darkness = max(0.0, min(1.0, (180.0 - avg_brightness) / 130.0))
+            xc = opt_x_centers[opt_idx]
+            patch_gray = warped_table[max(0, y_center - 25) : min(target_h, y_center + 25), max(0, xc - 25) : min(target_w, xc + 25)]
+            patch_ink = warped_ink[max(0, y_center - 25) : min(target_h, y_center + 25), max(0, xc - 25) : min(target_w, xc + 25)]
+
+            avg_brightness = float(np.mean(patch_gray))
+            ink_score = float(np.mean(patch_ink))
+            # Normalized darkness combining both grayscale and ink difference
+            darkness = max(0.0, min(1.0, max((180.0 - avg_brightness) / 130.0, ink_score / 120.0)))
+
             option_data[opt] = {
                 "avg_val": avg_brightness,
+                "ink_score": ink_score,
                 "fill_ratio": darkness,
-                "x_center": (x_min + x_max) // 2,
+                "x_center": xc,
             }
 
         fill_vals = [option_data[opt]["fill_ratio"] for opt in options]
@@ -240,31 +301,25 @@ def evaluate_dual_table_omr(
         sorted_fills = sorted(fill_vals, reverse=True)
         runner_up = sorted_fills[1] if len(sorted_fills) > 1 else 0.0
 
-        # Classification thresholds using relative brightness contrast
-        sorted_opts = sorted(options, key=lambda o: option_data[o]["avg_val"])
-        top_opt = sorted_opts[0]
-        second_opt = sorted_opts[1]
-        top_val = option_data[top_opt]["avg_val"]
-        second_val = option_data[second_opt]["avg_val"]
-        contrast = second_val - top_val
-
-        if top_val > 110.0 or contrast < 20.0:
+        # Classification thresholds
+        contrast = max_fill - runner_up
+        if max_fill < 0.28:
             status = "BLANK"
             classified_ans = None
             blank_count += 1
-        elif second_val < 95.0 and contrast < 25.0:
+        elif runner_up > 0.40 and contrast < 0.15:
             status = "MULTIPLE_MARKED"
             classified_ans = best_opt
             multiple_count += 1
             review_required.append(q)
-        elif contrast < 35.0:
+        elif contrast < 0.18 and max_fill < 0.65:
             status = "AMBIGUOUS"
             classified_ans = best_opt
             ambiguous_count += 1
             review_required.append(q)
         else:
             status = "CONFIDENT"
-            classified_ans = top_opt
+            classified_ans = best_opt
 
         detected_answers[str(q)] = classified_ans
         classified_questions.append({
@@ -285,28 +340,27 @@ def evaluate_dual_table_omr(
             circ_color = (0, 200, 0) if status == "CONFIDENT" else (0, 215, 255)
             cv2.circle(annotated, (int(pt_orig[0]), int(pt_orig[1])), 14, circ_color, 3, cv2.LINE_AA)
 
-    # Process Left Table (Q1 to Q13)
-    for q in range(1, 14):
+    # Process Left Table
+    for q in range(1, q_count_left + 1):
         y_center = int((q - 0.5) * row_h_left)
-        process_question_row(q, warped_left, y_center, M_left_inv)
+        process_question_row(q, warped_left, warped_ink_left, y_center, M_left_inv)
 
-    # Process Right Table (Q14 to Q25)
-    for q in range(14, 26):
-        row_idx = q - 14
-        y_center = int((row_idx + 0.5) * row_h_right)
-        process_question_row(q, warped_right, y_center, M_right_inv)
+    # Process Right Table
+    for q in range(q_count_left + 1, q_count_left + q_count_right + 1):
+        row_idx = q - q_count_left
+        y_center = int((row_idx - 0.5) * row_h_right)
+        process_question_row(q, warped_right, warped_ink_right, y_center, M_right_inv)
 
     annotated_b64 = None
     if generate_annotated:
         _, buffer = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 85])
         annotated_b64 = base64.b64encode(buffer).decode("utf-8")
 
-    total_q = 25
     is_review = len(review_required) > 0
 
     return {
         "success": True,
-        "template_version": "SCHOOL-25Q-DUAL-TABLE",
+        "template_version": template_ver,
         "total_questions": total_q,
         "detected_answers": detected_answers,
         "summary": {

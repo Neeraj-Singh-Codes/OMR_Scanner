@@ -41,12 +41,56 @@ export const processScan = async (req, res, next) => {
         timeout: 60000,
       });
     } catch (cvErr) {
-      if (cvErr.response) {
-        return res.status(cvErr.response.status).json(cvErr.response.data);
+      if (!req.file || !req.file.buffer) {
+        if (cvErr.response) {
+          return res.status(cvErr.response.status).json(cvErr.response.data);
+        }
+        return res.status(503).json({
+          success: false,
+          message: "Computer vision service is temporarily unavailable. Ensure Python service is running.",
+        });
       }
-      return res.status(503).json({
-        success: false,
-        message: "Computer vision service is temporarily unavailable. Ensure Python service is running.",
+
+      // Preserve image intact in database so user can view it and fulfill details manually
+      const errData = cvErr.response?.data;
+      const message = errData?.message || cvErr.message || "Could not automatically locate alignment markers or table borders";
+      const errorCode = errData?.error_code || "PROCESSING_ERROR";
+      const fileBase64 = req.file.buffer.toString("base64");
+
+      const failedScan = await dbStore.createScanResult({
+        examId: exam._id,
+        studentName: studentName && studentName !== "Unassigned Student" ? studentName.trim() : "Unassigned Student",
+        rollNumber: rollNumber && rollNumber !== "UNASSIGNED" ? rollNumber.trim() : "UNASSIGNED",
+        detectedAnswers: {},
+        correctedAnswers: {},
+        correctCount: 0,
+        incorrectCount: 0,
+        unansweredCount: exam.totalQuestions || 0,
+        reviewRequired: true,
+        reviewStatus: "PENDING",
+        score: 0,
+        maximumMarks: (exam.totalQuestions || 0) * (exam.markingScheme?.correctMarks || 1),
+        percentage: 0,
+        scanMetadata: {
+          annotatedImageBase64: fileBase64,
+          originalImageBase64: fileBase64,
+          isFailedScan: true,
+          processingError: message,
+          errorCode,
+          fileName: req.file.originalname,
+          reviewReasons: [`Automated alignment issue: ${message}. Sheet image preserved intact for manual verification and entry.`],
+          nameFlagged: true,
+          nameReason: "Automated scan failed; enter student name manually.",
+          rollNumberFlagged: true,
+          rollNumberReason: "Automated scan failed; enter roll number manually.",
+        },
+      });
+
+      return res.status(201).json({
+        success: true,
+        isFailedScan: true,
+        message: `Sheet image kept intact for manual fulfillment: ${message}.`,
+        data: typeof failedScan.toObject === "function" ? failedScan.toObject() : failedScan,
       });
     }
 
@@ -562,9 +606,51 @@ export const processBatchScans = async (req, res, next) => {
             const message = errData?.message || itemErr.message || "Failed to process OMR sheet";
             const errorCode = errData?.error_code || "PROCESSING_ERROR";
 
+            let failedScanId = null;
+            if (file && file.buffer) {
+              try {
+                const fileBase64 = file.buffer.toString("base64");
+                const failedScan = await dbStore.createScanResult({
+                  examId: exam._id,
+                  studentName: "Unassigned Student",
+                  rollNumber: "UNASSIGNED",
+                  detectedAnswers: {},
+                  correctedAnswers: {},
+                  correctCount: 0,
+                  incorrectCount: 0,
+                  unansweredCount: exam.totalQuestions || 0,
+                  reviewRequired: true,
+                  reviewStatus: "PENDING",
+                  score: 0,
+                  maximumMarks: (exam.totalQuestions || 0) * (exam.markingScheme?.correctMarks || 1),
+                  percentage: 0,
+                  scanMetadata: {
+                    annotatedImageBase64: fileBase64,
+                    originalImageBase64: fileBase64,
+                    isFailedScan: true,
+                    processingError: message,
+                    errorCode,
+                    fileName: file.originalname,
+                    reviewReasons: [`Automated alignment issue: ${message}. Sheet image preserved intact for manual verification and entry.`],
+                    nameFlagged: true,
+                    nameReason: "Automated scan failed; enter student name manually.",
+                    rollNumberFlagged: true,
+                    rollNumberReason: "Automated scan failed; enter roll number manually.",
+                  },
+                });
+                failedScanId = failedScan._id;
+                reviewRequiredCount++;
+              } catch (dbErr) {
+                console.error("Failed to persist failed scan record in batch:", dbErr);
+              }
+            }
+
             results.push({
               fileName: file.originalname,
               success: false,
+              scanId: failedScanId,
+              isFailedScan: true,
+              reviewRequired: true,
               error: message,
               errorCode,
             });
