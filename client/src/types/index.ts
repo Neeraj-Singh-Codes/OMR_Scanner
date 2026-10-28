@@ -97,6 +97,19 @@ export interface ScanResult {
     detectedStudentName?: string;
     detectedRollNumber?: string;
     detectedDivision?: string;
+    studentNameDetails?: {
+      value: string;
+      status: "accepted" | "needs_review";
+      rawPredictions?: Array<{ engine: string; text: string; confidence: number }>;
+      reviewReasons?: string[];
+    };
+    rollNumberDetails?: {
+      value: string;
+      status: "accepted" | "needs_review";
+      rawPredictions?: Array<{ engine: string; text: string; confidence: number }>;
+      reviewReasons?: string[];
+    };
+    identityStatus?: "accepted" | "needs_review";
   };
   evaluation?: EvaluationResult;
   createdAt: string;

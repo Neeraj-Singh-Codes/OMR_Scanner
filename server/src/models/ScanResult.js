@@ -105,6 +105,19 @@ const scanResultSchema = new mongoose.Schema(
       manuallyCorrected: { type: Boolean, default: false },
       originalRecognizedName: String,
       originalRecognizedRoll: String,
+      studentNameDetails: {
+        value: String,
+        status: { type: String, enum: ["accepted", "needs_review"], default: "accepted" },
+        rawPredictions: [mongoose.Schema.Types.Mixed],
+        reviewReasons: [String],
+      },
+      rollNumberDetails: {
+        value: String,
+        status: { type: String, enum: ["accepted", "needs_review"], default: "accepted" },
+        rawPredictions: [mongoose.Schema.Types.Mixed],
+        reviewReasons: [String],
+      },
+      identityStatus: { type: String, enum: ["accepted", "needs_review"], default: "accepted" },
     },
   },
   {

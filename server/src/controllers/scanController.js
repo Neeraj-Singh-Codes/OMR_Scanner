@@ -242,6 +242,19 @@ export const processScan = async (req, res, next) => {
         detectedStudentName: ocrResult.studentName,
         detectedRollNumber: ocrResult.rollNumber,
         detectedDivision: ocrResult.division,
+        studentNameDetails: {
+          value: finalStudentName,
+          status: isNameFlagged ? "needs_review" : "accepted",
+          rawPredictions: nameDetails.raw_predictions || [],
+          reviewReasons: nameDetails.review_reasons || [],
+        },
+        rollNumberDetails: {
+          value: finalRollNumber,
+          status: isRollFlagged ? "needs_review" : "accepted",
+          rawPredictions: rollDetails.raw_predictions || [],
+          reviewReasons: rollDetails.review_reasons || [],
+        },
+        identityStatus: (isNameFlagged || isRollFlagged) ? "needs_review" : "accepted",
       },
     });
 
@@ -494,6 +507,19 @@ export const processBatchScans = async (req, res, next) => {
                 detectedStudentName: ocrResult.studentName,
                 detectedRollNumber: ocrResult.rollNumber,
                 detectedDivision: ocrResult.division,
+                studentNameDetails: {
+                  value: batchStudentName,
+                  status: isNameFlagged ? "needs_review" : "accepted",
+                  rawPredictions: nameDetails.raw_predictions || [],
+                  reviewReasons: nameDetails.review_reasons || [],
+                },
+                rollNumberDetails: {
+                  value: batchRollNumber,
+                  status: isRollFlagged ? "needs_review" : "accepted",
+                  rawPredictions: rollDetails.raw_predictions || [],
+                  reviewReasons: rollDetails.review_reasons || [],
+                },
+                identityStatus: (isNameFlagged || isRollFlagged) ? "needs_review" : "accepted",
               },
             });
 
@@ -519,6 +545,19 @@ export const processBatchScans = async (req, res, next) => {
               percentage: evalResult.percentage,
               studentName: batchStudentName,
               rollNumber: batchRollNumber,
+              studentNameDetails: {
+                value: batchStudentName,
+                status: isNameFlagged ? "needs_review" : "accepted",
+                rawPredictions: nameDetails.raw_predictions || [],
+                reviewReasons: nameDetails.review_reasons || [],
+              },
+              rollNumberDetails: {
+                value: batchRollNumber,
+                status: isRollFlagged ? "needs_review" : "accepted",
+                rawPredictions: rollDetails.raw_predictions || [],
+                reviewReasons: rollDetails.review_reasons || [],
+              },
+              identityStatus: (isNameFlagged || isRollFlagged) ? "needs_review" : "accepted",
             });
           } catch (itemErr) {
             failedCount++;
