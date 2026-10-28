@@ -149,7 +149,7 @@ export const processScan = async (req, res, next) => {
     }
 
     // Duplicate Submission Protection
-    if (finalRollNumber && finalRollNumber !== "UNASSIGNED" && !isRollAmbiguous) {
+    if (finalRollNumber && finalRollNumber !== "UNASSIGNED" && !isRollFlagged) {
       const existingScans = await dbStore.findScanResults({
         examId: exam._id,
         rollNumber: finalRollNumber,
@@ -310,6 +310,9 @@ export const processBatchScans = async (req, res, next) => {
     let failedCount = 0;
     let reviewRequiredCount = 0;
 
+    // Track roll numbers encountered in current batch to detect intra-batch duplicates
+    const seenBatchRolls = new Map();
+
     // Process with controlled concurrency to balance speed and memory
     const concurrency = 2;
     const files = req.files;
@@ -415,6 +418,20 @@ export const processBatchScans = async (req, res, next) => {
               detectedAnswers,
               unresolvedReviewQuestions: reviewQuestionNumbers,
             });
+
+            // Duplicate roll number detection within this batch
+            if (batchRollNumber && batchRollNumber !== "UNASSIGNED") {
+              const normBatchRoll = String(batchRollNumber).trim().toLowerCase();
+              if (seenBatchRolls.has(normBatchRoll)) {
+                const prevFileName = seenBatchRolls.get(normBatchRoll);
+                isRollFlagged = true;
+                rollReason = rollReason
+                  ? `${rollReason}; Duplicate roll number in batch (also present in '${prevFileName}')`
+                  : `Duplicate sheet in batch: Roll number '${batchRollNumber}' was also submitted by '${prevFileName}'.`;
+              } else {
+                seenBatchRolls.set(normBatchRoll, file.originalname);
+              }
+            }
 
             const batchReviewReasons = [];
             if (evalResult.reviewRequired) {
@@ -597,8 +614,12 @@ export const reviewScan = async (req, res, next) => {
 
     // Check if candidate metadata has been verified by the teacher
     const prevMetadata = scan.scanMetadata || {};
+    const isManualIdentityEdit = studentName !== undefined || rollNumber !== undefined;
     const updatedMetadata = {
       ...prevMetadata,
+      manuallyCorrected: isManualIdentityEdit ? true : Boolean(prevMetadata.manuallyCorrected),
+      originalRecognizedName: prevMetadata.originalRecognizedName || prevMetadata.detectedStudentName || scan.studentName,
+      originalRecognizedRoll: prevMetadata.originalRecognizedRoll || prevMetadata.detectedRollNumber || scan.rollNumber,
       nameFlagged: studentName !== undefined ? false : prevMetadata.nameFlagged,
       rollNumberFlagged: rollNumber !== undefined ? false : prevMetadata.rollNumberFlagged,
       nameCrossedOutDetected: studentName !== undefined ? false : prevMetadata.nameCrossedOutDetected,

@@ -102,6 +102,9 @@ const scanResultSchema = new mongoose.Schema(
       detectedStudentName: String,
       detectedRollNumber: String,
       detectedDivision: String,
+      manuallyCorrected: { type: Boolean, default: false },
+      originalRecognizedName: String,
+      originalRecognizedRoll: String,
     },
   },
   {

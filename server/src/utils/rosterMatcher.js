@@ -173,6 +173,10 @@ export function matchStudentWithRoster({ recognizedName, recognizedRoll, roster 
           suggestedName: recognizedName,
         };
       }
+    } else {
+      // Roll number was recognized, but is NOT present in the class roster!
+      result.flag = true;
+      result.reason = `Roll number '${recognizedRoll}' is not registered in this examination's student roster.`;
     }
   }
 

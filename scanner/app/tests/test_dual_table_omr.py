@@ -70,6 +70,12 @@ def test_evaluate_filled_school_omr_sheet():
     assert result["summary"]["review_required"] is False
     assert result["annotated_image_base64"] is not None
 
+    cand = result.get("candidate_info", {})
+    assert cand.get("student_name") == "Aditya Virendra Singh"
+    assert cand.get("roll_number") == "52"
+    assert cand.get("name_details", {}).get("review_required") is False
+    assert cand.get("roll_details", {}).get("review_required") is False
+
 
 def test_evaluate_empty_school_omr_sheet():
     """Verifies that an unshaded blank sheet has 0 false positives and 25 blank responses."""
@@ -85,6 +91,13 @@ def test_evaluate_empty_school_omr_sheet():
 
     for q_str in [str(i) for i in range(1, 26)]:
         assert result["detected_answers"][q_str] is None
+
+    # Empty sheet candidate fields should be marked as unassigned/blank
+    cand = result.get("candidate_info", {})
+    assert cand.get("student_name") == "Unassigned Student"
+    assert cand.get("roll_number") == "UNASSIGNED"
+    assert cand.get("name_details", {}).get("is_blank") is True
+    assert cand.get("roll_details", {}).get("is_blank") is True
 
 
 def test_api_scan_endpoint_with_school_omr():
