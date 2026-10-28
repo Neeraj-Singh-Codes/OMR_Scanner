@@ -4,7 +4,7 @@ import { extractCandidateInfo } from "../services/ocrService.js";
 import { matchStudentWithRoster } from "../utils/rosterMatcher.js";
 import axios from "axios";
 
-const VISION_SERVICE_URL = process.env.PYTHON_VISION_SERVICE_URL || "http://localhost:8000";
+const VISION_SERVICE_URL = (process.env.PYTHON_VISION_SERVICE_URL || "http://127.0.0.1:8000").replace("localhost", "127.0.0.1");
 
 export const processScan = async (req, res, next) => {
   try {
@@ -99,13 +99,13 @@ export const processScan = async (req, res, next) => {
 
     let finalStudentName = isNameManual ? studentName.trim() : ocrResult.studentName;
     let finalRollNumber = isRollManual ? rollNumber.trim() : ocrResult.rollNumber;
-    let isRollFlagged = !isRollManual && (Boolean(rollDetails.review_required) || ocrResult.isAmbiguous);
-    let rollReason = !isRollManual && rollDetails.review_reasons?.length ? rollDetails.review_reasons.join("; ") : ocrResult.ambiguityReason;
+    let isRollFlagged = !isRollManual && (Boolean(rollDetails.review_required) || finalRollNumber === "UNASSIGNED");
+    let rollReason = !isRollManual && rollDetails.review_reasons?.length ? rollDetails.review_reasons.join("; ") : (finalRollNumber === "UNASSIGNED" ? "Roll number could not be determined" : null);
     const rollConfidence = rollDetails.confidence ?? ocrResult.confidence;
     const rawRollText = rollDetails.raw_ocr_text || ocrResult.rollNumber || "";
 
-    let isNameFlagged = !isNameManual && Boolean(nameDetails.review_required);
-    let nameReason = !isNameManual && nameDetails.review_reasons?.length ? nameDetails.review_reasons.join("; ") : null;
+    let isNameFlagged = !isNameManual && (Boolean(nameDetails.review_required) || finalStudentName === "Unassigned Student");
+    let nameReason = !isNameManual && nameDetails.review_reasons?.length ? nameDetails.review_reasons.join("; ") : (finalStudentName === "Unassigned Student" ? "Student name could not be determined" : null);
     const nameConfidence = nameDetails.confidence ?? ocrResult.confidence;
     const rawOcrText = nameDetails.raw_ocr_text || ocrResult.studentName || "";
     const recognitionEngine = nameDetails.recognition_engine || "RapidOCR-PP-OCRv4";
@@ -377,13 +377,13 @@ export const processBatchScans = async (req, res, next) => {
 
             let batchStudentName = ocrResult.studentName || "Unassigned Student";
             let batchRollNumber = ocrResult.rollNumber || "UNASSIGNED";
-            let isRollFlagged = Boolean(rollDetails.review_required) || ocrResult.isAmbiguous;
-            let rollReason = rollDetails.review_reasons?.length ? rollDetails.review_reasons.join("; ") : ocrResult.ambiguityReason;
+            let isRollFlagged = Boolean(rollDetails.review_required) || batchRollNumber === "UNASSIGNED";
+            let rollReason = rollDetails.review_reasons?.length ? rollDetails.review_reasons.join("; ") : (batchRollNumber === "UNASSIGNED" ? "Roll number could not be determined" : null);
             const rollConfidence = rollDetails.confidence ?? ocrResult.confidence;
             const rawRollText = rollDetails.raw_ocr_text || ocrResult.rollNumber || "";
 
-            let isNameFlagged = Boolean(nameDetails.review_required);
-            let nameReason = nameDetails.review_reasons?.length ? nameDetails.review_reasons.join("; ") : null;
+            let isNameFlagged = Boolean(nameDetails.review_required) || batchStudentName === "Unassigned Student";
+            let nameReason = nameDetails.review_reasons?.length ? nameDetails.review_reasons.join("; ") : (batchStudentName === "Unassigned Student" ? "Student name could not be determined" : null);
             const nameConfidence = nameDetails.confidence ?? ocrResult.confidence;
             const rawOcrText = nameDetails.raw_ocr_text || ocrResult.studentName || "";
             const recognitionEngine = nameDetails.recognition_engine || "RapidOCR-PP-OCRv4";
@@ -432,21 +432,18 @@ export const processBatchScans = async (req, res, next) => {
               unresolvedReviewQuestions: reviewQuestionNumbers,
             });
 
-            // Duplicate roll number detection within this batch
+            const batchReviewReasons = [];
+
+            // Duplicate roll number tracking within this batch (record advisory note without false-positive rejection)
             if (batchRollNumber && batchRollNumber !== "UNASSIGNED") {
               const normBatchRoll = String(batchRollNumber).trim().toLowerCase();
               if (seenBatchRolls.has(normBatchRoll)) {
                 const prevFileName = seenBatchRolls.get(normBatchRoll);
-                isRollFlagged = true;
-                rollReason = rollReason
-                  ? `${rollReason}; Duplicate roll number in batch (also present in '${prevFileName}')`
-                  : `Duplicate sheet in batch: Roll number '${batchRollNumber}' was also submitted by '${prevFileName}'.`;
+                batchReviewReasons.push(`Note: Roll number '${batchRollNumber}' was also detected on '${prevFileName}'.`);
               } else {
                 seenBatchRolls.set(normBatchRoll, file.originalname);
               }
             }
-
-            const batchReviewReasons = [];
             if (evalResult.reviewRequired) {
               batchReviewReasons.push(`Answer key review required on question(s): ${reviewQuestionNumbers.join(", ")}`);
             }

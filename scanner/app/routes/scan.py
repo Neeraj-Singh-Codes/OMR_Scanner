@@ -3,6 +3,7 @@ FastAPI Routes for OMR Scanning and Template Management.
 """
 
 import io
+import asyncio
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -104,7 +105,8 @@ async def scan_omr_sheet(
 
     try:
         contents = await file.read()
-        result = processor.process_image(
+        result = await asyncio.to_thread(
+            processor.process_image,
             image_input=contents,
             generate_annotated=return_annotated,
             check_blur=check_blur,

@@ -14,9 +14,20 @@ import os
 import re
 import base64
 import logging
+import warnings
 from typing import Dict, Any, Optional, List, Tuple
 import cv2
 import numpy as np
+
+# Suppress Hugging Face, PyTorch & Hub verbose loading logs completely
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+warnings.filterwarnings("ignore")
+logging.getLogger("transformers").setLevel(logging.ERROR)
+logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+
 from rapidocr_onnxruntime import RapidOCR
 
 logger = logging.getLogger(__name__)
@@ -75,18 +86,22 @@ def get_trocr_engine():
         return None, None
     _trocr_load_attempted = True
     try:
+        import transformers
+        transformers.logging.set_verbosity_error()
+        transformers.logging.disable_progress_bar()
         from transformers import TrOCRProcessor, VisionEncoderDecoderModel
         import torch
 
+        # Restrict PyTorch thread count to prevent thread contention during multi-request batch scans
+        torch.set_num_threads(min(4, os.cpu_count() or 4))
+
         model_name = os.environ.get("OMR_NAME_MODEL", "microsoft/trocr-small-handwritten")
-        logger.info(f"Loading TrOCR model ({model_name})...")
         processor = TrOCRProcessor.from_pretrained(model_name)
         model = VisionEncoderDecoderModel.from_pretrained(model_name)
         model.eval()
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
         model.to(device)
-        logger.info(f"TrOCR model ({model_name}) successfully loaded on {device}.")
 
         _trocr_processor = processor
         _trocr_model = model
@@ -102,7 +117,7 @@ def recognize_name_with_trocr(
 ) -> Tuple[Optional[str], float, List[Dict[str, Any]]]:
     """
     Performs handwritten English text recognition on the candidate name crop using Microsoft TrOCR.
-    Extracts calibrated softmax token confidence and generates multi-word predictions.
+    Optimized for high throughput: runs single-pass full-line inference with calibrated token confidence.
     
     Returns:
         (predicted_text, confidence_percent, list_of_raw_predictions)
@@ -117,7 +132,7 @@ def recognize_name_with_trocr(
     device = next(model.parameters()).device
     raw_predictions = []
 
-    # 1. Full Line Inference
+    # Single-pass Full Line Inference
     full_line_text = ""
     full_line_conf = 0.0
     try:
@@ -129,7 +144,7 @@ def recognize_name_with_trocr(
                 pixel_values,
                 return_dict_in_generate=True,
                 output_scores=True,
-                max_new_tokens=40,
+                max_new_tokens=25,
             )
             full_line_text = processor.batch_decode(out.sequences, skip_special_tokens=True)[0].strip()
             probs = [float(torch.softmax(s, dim=-1).max()) for s in out.scores]
@@ -144,51 +159,7 @@ def recognize_name_with_trocr(
     except Exception as e:
         logger.debug(f"TrOCR full-line inference failed: {e}")
 
-    # 2. Slot-by-Slot Inference
-    slot_words = []
-    slot_confs = []
-    if word_slots and len(word_slots) >= 2:
-        for idx, (s_start, s_end) in enumerate(word_slots):
-            pad = 6
-            x1 = max(0, s_start - pad)
-            x2 = min(crop_bgr.shape[1], s_end + pad)
-            if x2 <= x1 + 10:
-                continue
-            slot_patch = crop_bgr[:, x1:x2]
-            try:
-                rgb_slot = cv2.cvtColor(slot_patch, cv2.COLOR_BGR2RGB)
-                pil_slot = Image.fromarray(rgb_slot)
-                pv_s = processor(images=pil_slot, return_tensors="pt").pixel_values.to(device)
-                with torch.no_grad():
-                    out_s = model.generate(
-                        pv_s,
-                        return_dict_in_generate=True,
-                        output_scores=True,
-                        max_new_tokens=20,
-                    )
-                    slot_txt = processor.batch_decode(out_s.sequences, skip_special_tokens=True)[0].strip()
-                    probs_s = [float(torch.softmax(s, dim=-1).max()) for s in out_s.scores]
-                    slot_conf = round(float(np.mean(probs_s)) * 100, 1) if probs_s else 0.0
-                    if slot_txt:
-                        slot_words.append(slot_txt)
-                        slot_confs.append(slot_conf)
-            except Exception:
-                pass
-
-        if slot_words:
-            slot_text = " ".join(slot_words).strip()
-            slot_avg_conf = round(sum(slot_confs) / len(slot_confs), 1) if slot_confs else 0.0
-            raw_predictions.append({
-                "engine": "microsoft/trocr-handwritten (slot-by-slot)",
-                "text": slot_text,
-                "confidence": slot_avg_conf,
-            })
-
-    # Select best candidate
-    best_text = full_line_text if full_line_text else (" ".join(slot_words) if slot_words else None)
-    best_conf = full_line_conf if full_line_text else (round(sum(slot_confs) / len(slot_confs), 1) if slot_confs else 0.0)
-
-    return best_text, best_conf, raw_predictions
+    return full_line_text if full_line_text else None, full_line_conf, raw_predictions
 
 
 def warp_candidate_header(image: np.ndarray, dual_tables: Dict[str, np.ndarray]) -> np.ndarray:
@@ -844,15 +815,22 @@ def extract_candidate_info(
         "confidence": name_confidence,
     })
 
-    # Evaluate model agreement
+    # Evaluate dual-engine model agreement (avoid false-positive flags on clearly written names)
     if trocr_text and formatted_name:
-        if trocr_conf >= 75.0 and trocr_text.lower() != formatted_name.lower():
+        norm_trocr = trocr_text.strip().lower()
+        norm_paddle = formatted_name.strip().lower()
+        if norm_trocr == norm_paddle:
+            # Full dual-engine consensus! Boost confidence
+            name_confidence = max(name_confidence, 98.0)
+        elif trocr_conf >= 85.0 and name_confidence < 55.0:
+            # TrOCR is overwhelmingly confident while Paddle is weak: flag for review
             name_review_flag = True
             name_review_reasons.append(
-                f"Dual-engine model disagreement: TrOCR ('{trocr_text}') vs PaddleOCR ('{formatted_name}'). Teacher review needed."
+                f"Model comparison: TrOCR ('{trocr_text}') vs PaddleOCR ('{formatted_name}'). Teacher verification recommended."
             )
-        elif trocr_conf < 45.0 and len(formatted_name.split()) >= 2:
-            logger.debug(f"TrOCR dictionary prior reading '{trocr_text}' ({trocr_conf}%) evaluated against stroke partition '{formatted_name}'.")
+        else:
+            # Stroke-partitioned PaddleOCR is preferred for proper names; record TrOCR in raw_predictions without flagging
+            logger.debug(f"TrOCR prediction '{trocr_text}' ({trocr_conf}%) recorded alongside stroke partition '{formatted_name}' ({name_confidence}%).")
 
     # =========================================================================
     # 2. FIELD-SPECIFIC ROLL NUMBER PROCESSING & DIGIT DISAMBIGUATION
