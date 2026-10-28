@@ -683,7 +683,7 @@ export const ScanOMR: React.FC = () => {
                         </div>
 
                         <div className="min-w-0">
-                          <div className="flex items-center gap-2">
+                          <div className="flex flex-wrap items-center gap-1.5">
                             <span className="font-bold text-slate-900 dark:text-white truncate">
                               {item.studentName || item.fileName}
                             </span>
@@ -692,9 +692,30 @@ export const ScanOMR: React.FC = () => {
                                 Roll: {item.rollNumber}
                               </span>
                             )}
+                            {item.rosterMatch?.matched && (
+                              <span className="px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-950/60 text-[10px] font-bold text-emerald-700 dark:text-emerald-300 border border-emerald-200/60 dark:border-emerald-800/60">
+                                ✓ Roster
+                              </span>
+                            )}
+                            {item.nameFlagged && (
+                              <span className="px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-950/60 text-[10px] font-bold text-amber-700 dark:text-amber-300 border border-amber-200/60 dark:border-amber-800/60">
+                                Name Review
+                              </span>
+                            )}
+                            {item.rollNumberFlagged && (
+                              <span className="px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-950/60 text-[10px] font-bold text-amber-700 dark:text-amber-300 border border-amber-200/60 dark:border-amber-800/60">
+                                Roll Review
+                              </span>
+                            )}
+                            {(item.nameCrossedOutDetected || item.rollCrossedOutDetected) && (
+                              <span className="px-1.5 py-0.5 rounded bg-rose-100 dark:bg-rose-950/60 text-[10px] font-bold text-rose-700 dark:text-rose-300 border border-rose-200/60 dark:border-rose-800/60">
+                                Crossed-Out
+                              </span>
+                            )}
                           </div>
                           <span className="text-[11px] text-slate-500 dark:text-slate-400 truncate block">
                             File: {item.fileName}
+                            {item.nameReason ? ` • ${item.nameReason}` : ""}
                             {item.rollNumberReason ? ` • ${item.rollNumberReason}` : ""}
                             {item.error ? ` • Error: ${item.error}` : ""}
                           </span>

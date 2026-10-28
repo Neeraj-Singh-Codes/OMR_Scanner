@@ -37,6 +37,7 @@ export const dbStore = {
       ...data,
       totalQuestions: data.totalQuestions || (data.answerKey ? Object.keys(data.answerKey).length : 30),
       markingScheme: data.markingScheme || { correctMarks: 1, incorrectMarks: 0, unansweredMarks: 0 },
+      roster: data.roster || [],
       templateVersion: "OMR-V1.0",
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -83,6 +84,20 @@ export const dbStore = {
     };
     memoryExams.set(String(id), updated);
     return updated;
+  },
+
+  async deleteExam(id) {
+    if (isMongoConnected()) {
+      await ScanResult.deleteMany({ examId: id });
+      return await Exam.findByIdAndDelete(id);
+    }
+    memoryExams.delete(String(id));
+    for (const [key, scan] of memoryScanResults.entries()) {
+      if (String(scan.examId) === String(id)) {
+        memoryScanResults.delete(key);
+      }
+    }
+    return true;
   },
 
   async createScanResult(data) {
@@ -141,9 +156,13 @@ export const dbStore = {
     return updated;
   },
 
-  async findScanResults(query = {}, sortOptions = { score: -1 }) {
+  async findScanResults(query = {}, sortOptions = { score: -1 }, projection = null) {
     if (isMongoConnected()) {
-      return await ScanResult.find(query).sort(sortOptions).lean();
+      let q = ScanResult.find(query);
+      if (projection) {
+        q = q.select(projection);
+      }
+      return await q.sort(sortOptions).lean();
     }
     let list = Array.from(memoryScanResults.values());
     if (query.examId) {
@@ -156,7 +175,6 @@ export const dbStore = {
       list = list.filter((r) => r.rollNumber === query.rollNumber);
     }
     if (query.$or) {
-      // Simple regex search simulation for studentName or rollNumber
       list = list.filter((r) => {
         return query.$or.some((clause) => {
           if (clause.studentName) {

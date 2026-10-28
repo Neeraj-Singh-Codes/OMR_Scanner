@@ -18,6 +18,9 @@ client = TestClient(app)
 FILLED_IMAGE_PATH = Path("C:/Users/Dell/.gemini/antigravity/brain/fdd032c5-2f88-414f-a266-39479eecbe16/.user_uploaded/media_1793084190331_4d4630eb.png")
 EMPTY_IMAGE_PATH = Path("C:/Users/Dell/.gemini/antigravity/brain/fdd032c5-2f88-414f-a266-39479eecbe16/.user_uploaded/media_1793084201496_c0ce671d.png")
 
+if not FILLED_IMAGE_PATH.exists() or not EMPTY_IMAGE_PATH.exists():
+    pytest.skip("Local test image files not present on current system, skipping real-sheet integration tests", allow_module_level=True)
+
 GROUND_TRUTH_FILLED = {
     "1": "C", "2": "C", "3": "C", "4": "B", "5": "A",
     "6": "A", "7": "D", "8": "D", "9": "B", "10": "A",

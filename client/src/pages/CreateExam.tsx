@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Save, ArrowLeft, Sparkles, Hash } from "lucide-react";
+import { Save, ArrowLeft, Sparkles, Hash, Users } from "lucide-react";
 import { ExamService } from "../services/api";
 import { OptionLetter } from "../types";
 
@@ -16,6 +16,9 @@ export const CreateExam: React.FC = () => {
   const [correctMarks, setCorrectMarks] = useState<number>(1);
   const [incorrectMarks, setIncorrectMarks] = useState<number>(0);
   const [unansweredMarks, setUnansweredMarks] = useState<number>(0);
+
+  // Student roster text (optional)
+  const [rosterText, setRosterText] = useState("");
 
   // Answer key mapping: { "1": "A", "2": "B", ... }
   const [answerKey, setAnswerKey] = useState<Record<string, OptionLetter>>(() => {
@@ -68,6 +71,21 @@ export const CreateExam: React.FC = () => {
     setAnswerKey(generated);
   };
 
+  const parseRoster = (text: string) => {
+    return text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const parts = line.split(/[,;\t\-]/).map((p) => p.trim());
+        if (parts.length >= 2) {
+          return { rollNumber: parts[0], studentName: parts.slice(1).join(" ") };
+        }
+        return null;
+      })
+      .filter((e): e is { rollNumber: string; studentName: string } => Boolean(e && e.rollNumber && e.studentName));
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -87,6 +105,8 @@ export const CreateExam: React.FC = () => {
       finalKey[String(i)] = answerKey[String(i)];
     }
 
+    const roster = parseRoster(rosterText);
+
     try {
       setSaving(true);
       const created = await ExamService.create({
@@ -101,6 +121,7 @@ export const CreateExam: React.FC = () => {
           incorrectMarks,
           unansweredMarks,
         },
+        roster: roster.length > 0 ? roster : undefined,
       });
 
       navigate(`/exams/${created._id}`);
@@ -123,12 +144,13 @@ export const CreateExam: React.FC = () => {
         Back to Dashboard
       </button>
 
+      {/* Header */}
       <div className="mb-8">
-        <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white tracking-tight">
+        <h1 className="text-3xl font-extrabold text-slate-900 dark:text-white tracking-tight">
           Create New Examination
         </h1>
-        <p className="text-slate-600 dark:text-slate-400 mt-1 text-sm sm:text-base">
-          Configure exam details, set the number of questions, enter the answer key, and generate printable standardized A4 sheets.
+        <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
+          Set up exam metadata, scoring rules, answer key, and optional class roster.
         </p>
       </div>
 
@@ -138,15 +160,15 @@ export const CreateExam: React.FC = () => {
         </div>
       )}
 
-      <form onSubmit={handleSubmit} className="space-y-8">
-        {/* 1. Exam Metadata */}
+      <form onSubmit={handleSubmit} className="space-y-6">
+        {/* 1. Exam Information */}
         <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-sm space-y-4 transition-colors">
           <h2 className="text-base font-bold text-slate-900 dark:text-white border-b border-slate-100 dark:border-slate-800 pb-3">
-            1. Examination Details
+            1. Exam Details
           </h2>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="md:col-span-2">
               <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1">
                 Exam Title *
               </label>
@@ -155,7 +177,7 @@ export const CreateExam: React.FC = () => {
                 required
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                placeholder="e.g. Midterm Physics Assessment"
+                placeholder="e.g. Mid-Term Science Assessment"
                 className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-medium"
               />
             </div>
@@ -169,7 +191,7 @@ export const CreateExam: React.FC = () => {
                 required
                 value={subject}
                 onChange={(e) => setSubject(e.target.value)}
-                placeholder="e.g. Physics"
+                placeholder="e.g. Physics, Mathematics"
                 className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-medium"
               />
             </div>
@@ -183,7 +205,7 @@ export const CreateExam: React.FC = () => {
                 required
                 value={className}
                 onChange={(e) => setClassName(e.target.value)}
-                placeholder="e.g. Grade 10-A"
+                placeholder="e.g. Grade 10-A, Batch 2"
                 className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-medium"
               />
             </div>
@@ -318,12 +340,40 @@ export const CreateExam: React.FC = () => {
           </div>
         </div>
 
-        {/* 4. Answer Key Editor */}
+        {/* 4. Student Roster (Optional) */}
+        <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-sm space-y-4 transition-colors">
+          <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+            <div>
+              <h2 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <Users className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                4. Student Roster (Optional)
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Paste student roll numbers and names for automatic cross-validation of handwritten names.
+              </p>
+            </div>
+          </div>
+
+          <div>
+            <textarea
+              rows={4}
+              value={rosterText}
+              onChange={(e) => setRosterText(e.target.value)}
+              placeholder={`e.g. one per line:\n2026101, Pika Singh\n2026102, Virendra Singh\n2026103, Azad Jaiswar\n2026104, Jeet D. Rawat`}
+              className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 text-xs font-mono"
+            />
+            <span className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 block">
+              Format: <code>RollNumber, Student Name</code> (comma or tab separated).
+            </span>
+          </div>
+        </div>
+
+        {/* 5. Answer Key Editor */}
         <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-sm space-y-4 transition-colors">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800 gap-2">
             <div>
               <h2 className="text-base font-bold text-slate-900 dark:text-white">
-                4. Official Answer Key ({totalQuestions} Questions)
+                5. Official Answer Key ({totalQuestions} Questions)
               </h2>
               <span className="text-xs text-slate-500 dark:text-slate-400">
                 Select the correct option for each question (1 to {totalQuestions}).

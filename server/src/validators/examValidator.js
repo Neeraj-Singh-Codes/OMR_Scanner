@@ -2,6 +2,11 @@ import { z } from "zod";
 
 const optionEnum = z.enum(["A", "B", "C", "D", "a", "b", "c", "d"]).transform((val) => val.toUpperCase());
 
+const rosterEntrySchema = z.object({
+  rollNumber: z.string().trim().min(1, "Roll number cannot be empty."),
+  studentName: z.string().trim().min(1, "Student name cannot be empty."),
+});
+
 export const createExamSchema = z.object({
   title: z
     .string({ required_error: "Exam title is required." })
@@ -35,6 +40,7 @@ export const createExamSchema = z.object({
       unansweredMarks: z.coerce.number().default(0),
     })
     .optional(),
+  roster: z.array(rosterEntrySchema).optional(),
 });
 
 export const updateExamSchema = z.object({
@@ -51,4 +57,5 @@ export const updateExamSchema = z.object({
       unansweredMarks: z.coerce.number().optional(),
     })
     .optional(),
+  roster: z.array(rosterEntrySchema).optional(),
 });

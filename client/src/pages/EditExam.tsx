@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { Save, ArrowLeft, Sparkles, AlertCircle, CheckCircle2, Hash } from "lucide-react";
+import { Save, ArrowLeft, Sparkles, AlertCircle, CheckCircle2, Hash, Users } from "lucide-react";
 import { ExamService } from "../services/api";
 import { OptionLetter } from "../types";
 
@@ -23,6 +23,7 @@ export const EditExam: React.FC = () => {
   const [incorrectMarks, setIncorrectMarks] = useState<number>(0);
   const [unansweredMarks, setUnansweredMarks] = useState<number>(0);
 
+  const [rosterText, setRosterText] = useState("");
   const [answerKey, setAnswerKey] = useState<Record<string, OptionLetter>>({});
 
   useEffect(() => {
@@ -43,6 +44,10 @@ export const EditExam: React.FC = () => {
       setCorrectMarks(data.markingScheme?.correctMarks ?? 1);
       setIncorrectMarks(data.markingScheme?.incorrectMarks ?? 0);
       setUnansweredMarks(data.markingScheme?.unansweredMarks ?? 0);
+
+      if (data.roster && data.roster.length > 0) {
+        setRosterText(data.roster.map((r: any) => `${r.rollNumber}, ${r.studentName}`).join("\n"));
+      }
 
       const rawKey = data.answerKey instanceof Map ? Object.fromEntries(data.answerKey) : data.answerKey || {};
       setAnswerKey(rawKey as Record<string, OptionLetter>);
@@ -93,6 +98,21 @@ export const EditExam: React.FC = () => {
     setAnswerKey(generated);
   };
 
+  const parseRoster = (text: string) => {
+    return text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const parts = line.split(/[,;\t\-]/).map((p) => p.trim());
+        if (parts.length >= 2) {
+          return { rollNumber: parts[0], studentName: parts.slice(1).join(" ") };
+        }
+        return null;
+      })
+      .filter((e): e is { rollNumber: string; studentName: string } => Boolean(e && e.rollNumber && e.studentName));
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!id) return;
@@ -114,6 +134,8 @@ export const EditExam: React.FC = () => {
       finalKey[String(i)] = answerKey[String(i)];
     }
 
+    const roster = parseRoster(rosterText);
+
     try {
       setSaving(true);
       await ExamService.update(id, {
@@ -128,6 +150,7 @@ export const EditExam: React.FC = () => {
           incorrectMarks,
           unansweredMarks,
         },
+        roster: roster.length > 0 ? roster : [],
       });
 
       setSuccessMsg("Exam and answer key updated successfully! Associated scans have been recalculated.");
@@ -145,7 +168,7 @@ export const EditExam: React.FC = () => {
   if (loading) {
     return (
       <div className="max-w-4xl mx-auto px-4 py-16 text-center text-slate-500 dark:text-slate-400 font-medium">
-        Loading examination for editing...
+        Loading examination details...
       </div>
     );
   }
@@ -158,15 +181,16 @@ export const EditExam: React.FC = () => {
         className="mb-4 inline-flex items-center gap-1.5 text-xs font-semibold text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 transition-colors"
       >
         <ArrowLeft className="w-4 h-4" />
-        Back
+        Back to Exam Overview
       </button>
 
+      {/* Header */}
       <div className="mb-8">
-        <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white tracking-tight">
-          Edit Examination
+        <h1 className="text-3xl font-extrabold text-slate-900 dark:text-white tracking-tight">
+          Edit Examination & Answer Key
         </h1>
-        <p className="text-slate-600 dark:text-slate-400 mt-1 text-sm sm:text-base">
-          Update examination details, change the question count, modify the answer key, and adjust marking schemes.
+        <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
+          Modifying the answer key or marking scheme automatically triggers evaluation recalculation for all existing scanned sheets.
         </p>
       </div>
 
@@ -178,21 +202,21 @@ export const EditExam: React.FC = () => {
       )}
 
       {successMsg && (
-        <div className="mb-6 p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-900 text-emerald-800 dark:text-emerald-300 text-sm font-medium flex items-center gap-2">
-          <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+        <div className="mb-6 p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-900 text-emerald-700 dark:text-emerald-300 text-sm font-medium flex items-center gap-2">
+          <CheckCircle2 className="w-4 h-4 shrink-0" />
           <span>{successMsg}</span>
         </div>
       )}
 
-      <form onSubmit={handleSubmit} className="space-y-8">
-        {/* 1. Exam Metadata */}
+      <form onSubmit={handleSubmit} className="space-y-6">
+        {/* 1. Exam Information */}
         <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-sm space-y-4 transition-colors">
           <h2 className="text-base font-bold text-slate-900 dark:text-white border-b border-slate-100 dark:border-slate-800 pb-3">
-            1. Examination Details
+            1. Exam Details
           </h2>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="md:col-span-2">
               <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1">
                 Exam Title *
               </label>
@@ -201,7 +225,7 @@ export const EditExam: React.FC = () => {
                 required
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                placeholder="e.g. Midterm Physics Assessment"
+                placeholder="e.g. Mid-Term Science Assessment"
                 className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-medium"
               />
             </div>
@@ -215,7 +239,7 @@ export const EditExam: React.FC = () => {
                 required
                 value={subject}
                 onChange={(e) => setSubject(e.target.value)}
-                placeholder="e.g. Physics"
+                placeholder="e.g. Physics, Mathematics"
                 className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-medium"
               />
             </div>
@@ -229,7 +253,7 @@ export const EditExam: React.FC = () => {
                 required
                 value={className}
                 onChange={(e) => setClassName(e.target.value)}
-                placeholder="e.g. Grade 10-A"
+                placeholder="e.g. Grade 10-A, Batch 2"
                 className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-medium"
               />
             </div>
@@ -257,7 +281,7 @@ export const EditExam: React.FC = () => {
                 2. Number of Questions
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                Change the question count (up to 30). The answer key dynamically expands or contracts.
+                Configure question count from 1 to 30.
               </p>
             </div>
             <div className="flex items-center gap-1.5 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-100 dark:border-indigo-900 px-3.5 py-1.5 rounded-xl font-bold text-sm self-start sm:self-auto">
@@ -364,12 +388,40 @@ export const EditExam: React.FC = () => {
           </div>
         </div>
 
-        {/* 4. Answer Key Editor */}
+        {/* 4. Student Roster (Optional) */}
+        <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-sm space-y-4 transition-colors">
+          <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+            <div>
+              <h2 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <Users className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                4. Student Roster (Optional)
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Paste student roll numbers and names for automatic cross-validation of handwritten names.
+              </p>
+            </div>
+          </div>
+
+          <div>
+            <textarea
+              rows={4}
+              value={rosterText}
+              onChange={(e) => setRosterText(e.target.value)}
+              placeholder={`e.g. one per line:\n2026101, Pika Singh\n2026102, Virendra Singh\n2026103, Azad Jaiswar\n2026104, Jeet D. Rawat`}
+              className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 text-xs font-mono"
+            />
+            <span className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 block">
+              Format: <code>RollNumber, Student Name</code> (comma or tab separated).
+            </span>
+          </div>
+        </div>
+
+        {/* 5. Answer Key Editor */}
         <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-sm space-y-4 transition-colors">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800 gap-2">
             <div>
               <h2 className="text-base font-bold text-slate-900 dark:text-white">
-                4. Modify Answer Key ({totalQuestions} Questions)
+                5. Official Answer Key ({totalQuestions} Questions)
               </h2>
               <span className="text-xs text-slate-500 dark:text-slate-400">
                 Select the correct option for each question (1 to {totalQuestions}).
@@ -451,7 +503,7 @@ export const EditExam: React.FC = () => {
             className="px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm transition-all shadow-md shadow-indigo-600/25 flex items-center gap-2 disabled:opacity-50"
           >
             <Save className="w-4 h-4" />
-            {saving ? "Saving Changes..." : "Save Changes"}
+            {saving ? "Updating Exam..." : "Update Examination & Recalculate"}
           </button>
         </div>
       </form>

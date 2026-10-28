@@ -4,6 +4,7 @@ import {
   getExams,
   getExamById,
   updateExam,
+  deleteExam,
   getExamTemplatePdf,
 } from "../controllers/examController.js";
 import { getExamResults, exportExamResultsCSV } from "../controllers/scanController.js";
@@ -16,6 +17,7 @@ router.post("/", validateBody(createExamSchema), createExam);
 router.get("/", getExams);
 router.get("/:id", getExamById);
 router.put("/:id", validateBody(updateExamSchema), updateExam);
+router.delete("/:id", deleteExam);
 router.get("/:id/template", getExamTemplatePdf);
 router.get("/:examId/results", getExamResults);
 router.get("/:examId/results/export", exportExamResultsCSV);

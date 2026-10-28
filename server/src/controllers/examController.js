@@ -6,7 +6,7 @@ const VISION_SERVICE_URL = process.env.PYTHON_VISION_SERVICE_URL || "http://loca
 
 export const createExam = async (req, res, next) => {
   try {
-    const { title, subject, className, examDate, totalQuestions = 30, answerKey, markingScheme } = req.body;
+    const { title, subject, className, examDate, totalQuestions = 30, answerKey, markingScheme, roster } = req.body;
 
     const exam = await dbStore.createExam({
       title,
@@ -16,6 +16,7 @@ export const createExam = async (req, res, next) => {
       totalQuestions: totalQuestions || Object.keys(answerKey).length,
       answerKey,
       markingScheme: markingScheme || { correctMarks: 1, incorrectMarks: 0, unansweredMarks: 0 },
+      roster: roster || [],
     });
 
     res.status(201).json({
@@ -149,6 +150,21 @@ export const updateExam = async (req, res, next) => {
       success: true,
       message: "Exam updated successfully.",
       data: updated,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const deleteExam = async (req, res, next) => {
+  try {
+    const deleted = await dbStore.deleteExam(req.params.id);
+    if (!deleted) {
+      return res.status(404).json({ success: false, message: "Exam not found." });
+    }
+    res.status(200).json({
+      success: true,
+      message: "Exam and associated scans deleted successfully.",
     });
   } catch (error) {
     next(error);

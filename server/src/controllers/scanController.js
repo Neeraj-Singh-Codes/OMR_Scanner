@@ -1,6 +1,7 @@
 import { dbStore } from "../services/dbStore.js";
 import { ScoringEngine } from "../services/scoringEngine.js";
 import { extractCandidateInfo } from "../services/ocrService.js";
+import { matchStudentWithRoster } from "../utils/rosterMatcher.js";
 import axios from "axios";
 
 const VISION_SERVICE_URL = process.env.PYTHON_VISION_SERVICE_URL || "http://localhost:8000";
@@ -37,7 +38,7 @@ export const processScan = async (req, res, next) => {
           return_annotated: true,
           check_blur: true,
         },
-        timeout: 20000,
+        timeout: 60000,
       });
     } catch (cvErr) {
       if (cvErr.response) {
@@ -55,6 +56,12 @@ export const processScan = async (req, res, next) => {
 
     // Automated Candidate OCR Extraction (Name & Roll Number)
     const headerB64 = cvData.diagnostics?.header_image_base64;
+    const candInfo = cvData.candidate_info || {};
+    const nameDetails = candInfo.name_details || {};
+    const rollDetails = candInfo.roll_details || {};
+    const nameImageBase64 = candInfo.name_image_base64 || nameDetails.name_crop_base64 || null;
+    const rollImageBase64 = candInfo.roll_image_base64 || rollDetails.roll_crop_base64 || null;
+
     let ocrResult = {
       studentName: studentName || "Unassigned Student",
       rollNumber: rollNumber || "UNASSIGNED",
@@ -68,20 +75,78 @@ export const processScan = async (req, res, next) => {
     const isRollManual = rollNumber && rollNumber !== "UNASSIGNED" && rollNumber.trim() !== "";
 
     if (!isNameManual || !isRollManual) {
-      try {
-        const ocr = await extractCandidateInfo({
-          headerImageBase64: headerB64,
-          imageBuffer: req.file.buffer,
-        });
-        ocrResult = ocr;
-      } catch (ocrErr) {
-        console.error("Candidate OCR extraction failed:", ocrErr);
+      if (cvData.candidate_info) {
+        ocrResult = {
+          studentName: cvData.candidate_info.student_name || "Unassigned Student",
+          rollNumber: cvData.candidate_info.roll_number || "UNASSIGNED",
+          division: cvData.candidate_info.division || null,
+          confidence: cvData.candidate_info.confidence ?? 100,
+          isAmbiguous: cvData.candidate_info.is_ambiguous ?? false,
+          ambiguityReason: cvData.candidate_info.ambiguity_reason || null,
+        };
+      } else {
+        try {
+          const ocr = await extractCandidateInfo({
+            headerImageBase64: headerB64,
+            imageBuffer: req.file.buffer,
+          });
+          ocrResult = ocr;
+        } catch (ocrErr) {
+          console.error("Candidate OCR extraction failed:", ocrErr);
+        }
       }
     }
 
-    const finalStudentName = isNameManual ? studentName.trim() : ocrResult.studentName;
-    const finalRollNumber = isRollManual ? rollNumber.trim() : ocrResult.rollNumber;
-    const isRollAmbiguous = !isRollManual && ocrResult.isAmbiguous;
+    let finalStudentName = isNameManual ? studentName.trim() : ocrResult.studentName;
+    let finalRollNumber = isRollManual ? rollNumber.trim() : ocrResult.rollNumber;
+    let isRollFlagged = !isRollManual && (Boolean(rollDetails.review_required) || ocrResult.isAmbiguous);
+    let rollReason = !isRollManual && rollDetails.review_reasons?.length ? rollDetails.review_reasons.join("; ") : ocrResult.ambiguityReason;
+    const rollConfidence = rollDetails.confidence ?? ocrResult.confidence;
+    const rawRollText = rollDetails.raw_ocr_text || ocrResult.rollNumber || "";
+
+    let isNameFlagged = !isNameManual && Boolean(nameDetails.review_required);
+    let nameReason = !isNameManual && nameDetails.review_reasons?.length ? nameDetails.review_reasons.join("; ") : null;
+    const nameConfidence = nameDetails.confidence ?? ocrResult.confidence;
+    const rawOcrText = nameDetails.raw_ocr_text || ocrResult.studentName || "";
+    const recognitionEngine = nameDetails.recognition_engine || "RapidOCR-PP-OCRv4";
+
+    const nameCrossedOutDetected = !isNameManual && Boolean(nameDetails.crossed_out_detected);
+    const rollCrossedOutDetected = !isRollManual && Boolean(rollDetails.crossed_out_detected);
+    const nameCorrectionSuspected = !isNameManual && Boolean(nameDetails.correction_suspected);
+    const rollCorrectionSuspected = !isRollManual && Boolean(rollDetails.correction_suspected);
+
+    // Cross-validate candidate identification against optional exam student roster
+    let rosterMatch = {
+      matched: false,
+      rosterName: null,
+      similarity: 0,
+    };
+
+    if (exam.roster && exam.roster.length > 0) {
+      const rosterVal = matchStudentWithRoster({
+        recognizedName: ocrResult.studentName,
+        recognizedRoll: ocrResult.rollNumber,
+        roster: exam.roster,
+      });
+
+      rosterMatch = {
+        matched: rosterVal.matched,
+        rosterName: rosterVal.rosterName,
+        similarity: rosterVal.similarity,
+      };
+
+      if (rosterVal.flag && !isNameManual) {
+        isNameFlagged = true;
+        nameReason = nameReason ? `${nameReason}. ${rosterVal.reason}` : rosterVal.reason;
+      }
+
+      if (rosterVal.matched && !isNameManual && rosterVal.suggestedName) {
+        finalStudentName = rosterVal.suggestedName;
+      }
+      if (rosterVal.matched && !isRollManual && rosterVal.suggestedRoll && (finalRollNumber === "UNASSIGNED" || rosterVal.similarity >= 85)) {
+        finalRollNumber = rosterVal.suggestedRoll;
+      }
+    }
 
     // Duplicate Submission Protection
     if (finalRollNumber && finalRollNumber !== "UNASSIGNED" && !isRollAmbiguous) {
@@ -117,7 +182,24 @@ export const processScan = async (req, res, next) => {
       unresolvedReviewQuestions: reviewQuestionNumbers,
     });
 
-    const totalReviewRequired = evalResult.reviewRequired || isRollAmbiguous;
+    const reviewReasons = [];
+    if (evalResult.reviewRequired) {
+      reviewReasons.push(`Answer key review required on question(s): ${reviewQuestionNumbers.join(", ")}`);
+    }
+    if (isRollFlagged && rollReason) {
+      reviewReasons.push(`Roll Number: ${rollReason}`);
+    }
+    if (isNameFlagged && nameReason) {
+      reviewReasons.push(`Student Name: ${nameReason}`);
+    }
+    if (nameCrossedOutDetected) {
+      reviewReasons.push("Strike-through or crossed-out text detected in Student Name field.");
+    }
+    if (rollCrossedOutDetected) {
+      reviewReasons.push("Strike-through or crossed-out digits detected in Roll Number field.");
+    }
+
+    const totalReviewRequired = evalResult.reviewRequired || isRollFlagged || isNameFlagged || nameCrossedOutDetected || rollCrossedOutDetected;
 
     const scanResult = await dbStore.createScanResult({
       examId: exam._id,
@@ -140,9 +222,23 @@ export const processScan = async (req, res, next) => {
         multipleMarkedQuestions: cvData.summary?.multiple_marked_count > 0 ? reviewQuestionNumbers : [],
         annotatedImageBase64: cvData.annotated_image_base64,
         headerImageBase64: headerB64,
-        rollNumberFlagged: isRollAmbiguous,
-        rollNumberConfidence: ocrResult.confidence,
-        rollNumberReason: ocrResult.ambiguityReason,
+        nameImageBase64,
+        rollImageBase64,
+        rollNumberFlagged: isRollFlagged,
+        rollNumberConfidence: rollConfidence,
+        rollNumberReason: rollReason,
+        nameFlagged: isNameFlagged,
+        nameConfidence,
+        nameReason,
+        nameCrossedOutDetected,
+        rollCrossedOutDetected,
+        nameCorrectionSuspected,
+        rollCorrectionSuspected,
+        rawOcrText,
+        rawRollText,
+        reviewReasons,
+        recognitionEngine,
+        rosterMatch,
         detectedStudentName: ocrResult.studentName,
         detectedRollNumber: ocrResult.rollNumber,
         detectedDivision: ocrResult.division,
@@ -152,15 +248,28 @@ export const processScan = async (req, res, next) => {
     res.status(201).json({
       success: true,
       message: totalReviewRequired
-        ? isRollAmbiguous
+        ? isRollFlagged
           ? "Sheet scanned: Roll number requires teacher verification."
-          : "Sheet scanned with questions requiring teacher verification."
+          : isNameFlagged
+            ? "Sheet scanned: Candidate name requires teacher verification."
+            : nameCrossedOutDetected || rollCrossedOutDetected
+              ? "Sheet scanned: Crossed-out writing detected, verification required."
+              : "Sheet scanned with questions requiring teacher verification."
         : "Sheet scanned and evaluated successfully.",
       data: {
         ...(typeof scanResult.toObject === "function" ? scanResult.toObject() : scanResult),
         evaluation: evalResult,
         cvDiagnostics: cvData.diagnostics,
-        candidateOCR: ocrResult,
+        candidateOCR: {
+          ...ocrResult,
+          nameImageBase64,
+          nameFlagged: isNameFlagged,
+          nameConfidence,
+          nameReason,
+          rawOcrText,
+          recognitionEngine,
+          rosterMatch,
+        },
       },
     });
   } catch (error) {
@@ -171,7 +280,7 @@ export const processScan = async (req, res, next) => {
 /**
  * Batch OMR Scanning Endpoint: Handles 50-100 answer sheet photographs simultaneously.
  * Employs controlled concurrency, automated OCR detection of Name & Roll No,
- * per-file error isolation, and comprehensive batch evaluation.
+ * roster cross-validation, per-file error isolation, and comprehensive batch evaluation.
  */
 export const processBatchScans = async (req, res, next) => {
   try {
@@ -201,8 +310,8 @@ export const processBatchScans = async (req, res, next) => {
     let failedCount = 0;
     let reviewRequiredCount = 0;
 
-    // Process with controlled concurrency of 3 to balance speed and memory
-    const concurrency = 3;
+    // Process with controlled concurrency to balance speed and memory
+    const concurrency = 2;
     const files = req.files;
 
     for (let i = 0; i < files.length; i += concurrency) {
@@ -218,7 +327,7 @@ export const processBatchScans = async (req, res, next) => {
             const cvResponse = await axios.post(`${VISION_SERVICE_URL}/scan`, formData, {
               headers: { "Content-Type": "multipart/form-data" },
               params: { return_annotated: true, check_blur: true },
-              timeout: 25000,
+              timeout: 60000,
             });
 
             const cvData = cvResponse.data;
@@ -227,10 +336,78 @@ export const processBatchScans = async (req, res, next) => {
 
             // 2. Automated Candidate OCR
             const headerB64 = cvData.diagnostics?.header_image_base64;
-            const ocrResult = await extractCandidateInfo({
-              headerImageBase64: headerB64,
-              imageBuffer: file.buffer,
-            });
+            const candInfo = cvData.candidate_info || {};
+            const nameDetails = candInfo.name_details || {};
+            const rollDetails = candInfo.roll_details || {};
+            const nameImageBase64 = candInfo.name_image_base64 || nameDetails.name_crop_base64 || null;
+            const rollImageBase64 = candInfo.roll_image_base64 || rollDetails.roll_crop_base64 || null;
+
+            let ocrResult;
+            if (cvData.candidate_info) {
+              ocrResult = {
+                studentName: cvData.candidate_info.student_name || "Unassigned Student",
+                rollNumber: cvData.candidate_info.roll_number || "UNASSIGNED",
+                division: cvData.candidate_info.division || null,
+                confidence: cvData.candidate_info.confidence ?? 100,
+                isAmbiguous: cvData.candidate_info.is_ambiguous ?? false,
+                ambiguityReason: cvData.candidate_info.ambiguity_reason || null,
+              };
+            } else {
+              ocrResult = await extractCandidateInfo({
+                headerImageBase64: headerB64,
+                imageBuffer: file.buffer,
+              });
+            }
+
+            let batchStudentName = ocrResult.studentName || "Unassigned Student";
+            let batchRollNumber = ocrResult.rollNumber || "UNASSIGNED";
+            let isRollFlagged = Boolean(rollDetails.review_required) || ocrResult.isAmbiguous;
+            let rollReason = rollDetails.review_reasons?.length ? rollDetails.review_reasons.join("; ") : ocrResult.ambiguityReason;
+            const rollConfidence = rollDetails.confidence ?? ocrResult.confidence;
+            const rawRollText = rollDetails.raw_ocr_text || ocrResult.rollNumber || "";
+
+            let isNameFlagged = Boolean(nameDetails.review_required);
+            let nameReason = nameDetails.review_reasons?.length ? nameDetails.review_reasons.join("; ") : null;
+            const nameConfidence = nameDetails.confidence ?? ocrResult.confidence;
+            const rawOcrText = nameDetails.raw_ocr_text || ocrResult.studentName || "";
+            const recognitionEngine = nameDetails.recognition_engine || "RapidOCR-PP-OCRv4";
+
+            const nameCrossedOutDetected = Boolean(nameDetails.crossed_out_detected);
+            const rollCrossedOutDetected = Boolean(rollDetails.crossed_out_detected);
+            const nameCorrectionSuspected = Boolean(nameDetails.correction_suspected);
+            const rollCorrectionSuspected = Boolean(rollDetails.correction_suspected);
+
+            let rosterMatch = {
+              matched: false,
+              rosterName: null,
+              similarity: 0,
+            };
+
+            if (exam.roster && exam.roster.length > 0) {
+              const rosterVal = matchStudentWithRoster({
+                recognizedName: ocrResult.studentName,
+                recognizedRoll: ocrResult.rollNumber,
+                roster: exam.roster,
+              });
+
+              rosterMatch = {
+                matched: rosterVal.matched,
+                rosterName: rosterVal.rosterName,
+                similarity: rosterVal.similarity,
+              };
+
+              if (rosterVal.flag) {
+                isNameFlagged = true;
+                nameReason = nameReason ? `${nameReason}. ${rosterVal.reason}` : rosterVal.reason;
+              }
+
+              if (rosterVal.matched && rosterVal.suggestedName) {
+                batchStudentName = rosterVal.suggestedName;
+              }
+              if (rosterVal.matched && rosterVal.suggestedRoll && (batchRollNumber === "UNASSIGNED" || rosterVal.similarity >= 85)) {
+                batchRollNumber = rosterVal.suggestedRoll;
+              }
+            }
 
             // 3. Score Evaluation
             const evalResult = scoringEngine.evaluate({
@@ -239,14 +416,30 @@ export const processBatchScans = async (req, res, next) => {
               unresolvedReviewQuestions: reviewQuestionNumbers,
             });
 
-            const isRollAmbiguous = ocrResult.isAmbiguous;
-            const reviewRequired = evalResult.reviewRequired || isRollAmbiguous;
+            const batchReviewReasons = [];
+            if (evalResult.reviewRequired) {
+              batchReviewReasons.push(`Answer key review required on question(s): ${reviewQuestionNumbers.join(", ")}`);
+            }
+            if (isRollFlagged && rollReason) {
+              batchReviewReasons.push(`Roll Number: ${rollReason}`);
+            }
+            if (isNameFlagged && nameReason) {
+              batchReviewReasons.push(`Student Name: ${nameReason}`);
+            }
+            if (nameCrossedOutDetected) {
+              batchReviewReasons.push("Strike-through or crossed-out text detected in Student Name field.");
+            }
+            if (rollCrossedOutDetected) {
+              batchReviewReasons.push("Strike-through or crossed-out digits detected in Roll Number field.");
+            }
+
+            const reviewRequired = evalResult.reviewRequired || isRollFlagged || isNameFlagged || nameCrossedOutDetected || rollCrossedOutDetected;
 
             // 4. Save to Database
             const scanResult = await dbStore.createScanResult({
               examId: exam._id,
-              studentName: ocrResult.studentName || "Unassigned Student",
-              rollNumber: ocrResult.rollNumber || "UNASSIGNED",
+              studentName: batchStudentName,
+              rollNumber: batchRollNumber,
               detectedAnswers,
               correctedAnswers: {},
               correctCount: evalResult.correctCount,
@@ -264,9 +457,23 @@ export const processBatchScans = async (req, res, next) => {
                 multipleMarkedQuestions: cvData.summary?.multiple_marked_count > 0 ? reviewQuestionNumbers : [],
                 annotatedImageBase64: cvData.annotated_image_base64,
                 headerImageBase64: headerB64,
-                rollNumberFlagged: isRollAmbiguous,
-                rollNumberConfidence: ocrResult.confidence,
-                rollNumberReason: ocrResult.ambiguityReason,
+                nameImageBase64,
+                rollImageBase64,
+                rollNumberFlagged: isRollFlagged,
+                rollNumberConfidence: rollConfidence,
+                rollNumberReason: rollReason,
+                nameFlagged: isNameFlagged,
+                nameConfidence,
+                nameReason,
+                nameCrossedOutDetected,
+                rollCrossedOutDetected,
+                nameCorrectionSuspected,
+                rollCorrectionSuspected,
+                rawOcrText,
+                rawRollText,
+                reviewReasons: batchReviewReasons,
+                recognitionEngine,
+                rosterMatch,
                 detectedStudentName: ocrResult.studentName,
                 detectedRollNumber: ocrResult.rollNumber,
                 detectedDivision: ocrResult.division,
@@ -282,13 +489,19 @@ export const processBatchScans = async (req, res, next) => {
               scanId: scanResult._id,
               scanResult: typeof scanResult.toObject === "function" ? scanResult.toObject() : scanResult,
               reviewRequired,
-              rollNumberFlagged: isRollAmbiguous,
-              rollNumberReason: ocrResult.ambiguityReason,
+              rollNumberFlagged: isRollFlagged,
+              rollNumberReason: rollReason,
+              nameFlagged: isNameFlagged,
+              nameReason,
+              nameConfidence,
+              nameCrossedOutDetected,
+              rollCrossedOutDetected,
+              rosterMatch,
               score: evalResult.score,
               maximumMarks: evalResult.maximumMarks,
               percentage: evalResult.percentage,
-              studentName: ocrResult.studentName,
-              rollNumber: ocrResult.rollNumber,
+              studentName: batchStudentName,
+              rollNumber: batchRollNumber,
             });
           } catch (itemErr) {
             failedCount++;
@@ -382,6 +595,20 @@ export const reviewScan = async (req, res, next) => {
       unresolvedReviewQuestions: remainingPending,
     });
 
+    // Check if candidate metadata has been verified by the teacher
+    const prevMetadata = scan.scanMetadata || {};
+    const updatedMetadata = {
+      ...prevMetadata,
+      nameFlagged: studentName !== undefined ? false : prevMetadata.nameFlagged,
+      rollNumberFlagged: rollNumber !== undefined ? false : prevMetadata.rollNumberFlagged,
+      nameCrossedOutDetected: studentName !== undefined ? false : prevMetadata.nameCrossedOutDetected,
+      rollCrossedOutDetected: rollNumber !== undefined ? false : prevMetadata.rollCrossedOutDetected,
+      nameCorrectionSuspected: studentName !== undefined ? false : prevMetadata.nameCorrectionSuspected,
+      rollCorrectionSuspected: rollNumber !== undefined ? false : prevMetadata.rollCorrectionSuspected,
+    };
+
+    const reviewStillRequired = evalResult.reviewRequired || updatedMetadata.nameFlagged || updatedMetadata.rollNumberFlagged;
+
     const updated = await dbStore.updateScanResult(req.params.id, {
       studentName: studentName || scan.studentName,
       rollNumber: rollNumber || scan.rollNumber,
@@ -392,8 +619,9 @@ export const reviewScan = async (req, res, next) => {
       score: evalResult.score,
       maximumMarks: evalResult.maximumMarks,
       percentage: evalResult.percentage,
-      reviewRequired: evalResult.reviewRequired,
-      reviewStatus: evalResult.reviewRequired ? "PENDING" : "RESOLVED",
+      reviewRequired: reviewStillRequired,
+      reviewStatus: reviewStillRequired ? "PENDING" : "RESOLVED",
+      scanMetadata: updatedMetadata,
     });
 
     res.status(200).json({
@@ -411,14 +639,27 @@ export const reviewScan = async (req, res, next) => {
 
 export const finalizeScan = async (req, res, next) => {
   try {
+    const scan = await dbStore.findScanResultById(req.params.id);
+    if (!scan) {
+      return res.status(404).json({ success: false, message: "Scan result not found." });
+    }
+
+    const prevMetadata = scan.scanMetadata || {};
+    const updatedMetadata = {
+      ...prevMetadata,
+      nameFlagged: false,
+      rollNumberFlagged: false,
+      nameCrossedOutDetected: false,
+      rollCrossedOutDetected: false,
+      nameCorrectionSuspected: false,
+      rollCorrectionSuspected: false,
+    };
+
     const updated = await dbStore.updateScanResult(req.params.id, {
       reviewStatus: "CONFIRMED",
       reviewRequired: false,
+      scanMetadata: updatedMetadata,
     });
-
-    if (!updated) {
-      return res.status(404).json({ success: false, message: "Scan result not found." });
-    }
 
     res.status(200).json({
       success: true,
@@ -451,7 +692,12 @@ export const getExamResults = async (req, res, next) => {
     const sortOptions = {};
     sortOptions[sortBy] = sortOrder === "asc" ? 1 : -1;
 
-    const results = await dbStore.findScanResults(query, sortOptions);
+    const results = await dbStore.findScanResults(query, sortOptions, {
+      "scanMetadata.annotatedImageBase64": 0,
+      "scanMetadata.headerImageBase64": 0,
+      "scanMetadata.nameImageBase64": 0,
+      "scanMetadata.rollImageBase64": 0,
+    });
 
     res.status(200).json({
       success: true,
