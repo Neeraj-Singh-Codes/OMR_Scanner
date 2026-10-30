@@ -14,7 +14,7 @@ export class ScoringEngine {
   constructor(options = {}) {
     this.correctMarks = options.correctMarks ?? 1;
     this.incorrectMarks = options.incorrectMarks ?? 0;
-    this.unansweredMarks = options.unansweredMarks ?? 0;
+    this.unansweredMarks = 0; // When no circle is marked, always award 0 marks
   }
 
   /**
@@ -25,13 +25,15 @@ export class ScoringEngine {
    * @param {Record<string, string | null>} params.detectedAnswers - Raw detected answers from scanner
    * @param {Record<string, string | null>} [params.correctedAnswers={}] - Teacher-corrected answers
    * @param {number[]} [params.unresolvedReviewQuestions=[]] - List of question numbers requiring manual teacher review
+   * @param {number[]} [params.multipleMarkedQuestions=[]] - List of question numbers where 2 or more options were marked
    * @returns {Object} Structured evaluation result
    */
   evaluate({
     answerKey,
     detectedAnswers,
     correctedAnswers = {},
-    unresolvedReviewQuestions = []
+    unresolvedReviewQuestions = [],
+    multipleMarkedQuestions = [],
   }) {
     if (!answerKey || Object.keys(answerKey).length === 0) {
       throw new Error("Answer key is required for scoring evaluation.");
@@ -64,6 +66,9 @@ export class ScoringEngine {
       // Check if this question is in unresolved review state
       const isUnresolved = unresolvedReviewQuestions.includes(qNum) && !hasCorrection;
 
+      // Check if question has multiple marked bubbles (2 or more / more than 2 options marked)
+      const isMultipleMarked = multipleMarkedQuestions.includes(qNum) && !hasCorrection;
+
       let status = "UNANSWERED";
       let marksAwarded = 0;
 
@@ -72,10 +77,16 @@ export class ScoringEngine {
         reviewRequiredCount++;
         pendingReviewList.push(qNum);
         marksAwarded = 0; // Never assign marks to unresolved ambiguous questions
+      } else if (isMultipleMarked) {
+        // If more than 2 options are marked (or 2+ options marked): award 0 marks
+        status = "MULTIPLE_MARKED";
+        incorrectCount++;
+        marksAwarded = 0;
       } else if (!finalAnswer) {
+        // When no circle is marked on the page: award 0 marks
         status = "UNANSWERED";
         unansweredCount++;
-        marksAwarded = this.unansweredMarks;
+        marksAwarded = 0;
       } else if (finalAnswer.toUpperCase() === correctAnswer.toUpperCase()) {
         status = "CORRECT";
         correctCount++;

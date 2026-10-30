@@ -124,4 +124,31 @@ describe("ScoringEngine Service Unit Tests", () => {
     assert.equal(result.percentage, 100);
     assert.equal(result.breakdown[2].correctedAnswer, "C");
   });
+
+  test("awards 0 marks for unmarked questions and 0 marks for questions with multiple options marked", () => {
+    // Exam with correctMarks = 4, negative marking penalty of 1 mark (-1) for incorrect single answers
+    const engine = new ScoringEngine({ correctMarks: 4, incorrectMarks: 1, unansweredMarks: 0 });
+    const detected = {
+      "1": "A", // Correct (+4)
+      "2": "C", // Incorrect single answer (-1 penalty)
+      "3": null, // Unmarked / blank -> MUST give 0 marks (NOT -1)
+      "4": null, // Multiple options marked (Q4) -> MUST give 0 marks (NOT -1)
+      "5": null, // More than 2 options marked (Q5) -> MUST give 0 marks (NOT -1)
+    };
+
+    const result = engine.evaluate({
+      answerKey: sampleAnswerKey,
+      detectedAnswers: detected,
+      multipleMarkedQuestions: [4, 5],
+    });
+
+    // Q1 (+4), Q2 (-1), Q3 (0), Q4 (0), Q5 (0) => Total = 3
+    assert.equal(result.breakdown[2].marksAwarded, 0); // Q3 blank
+    assert.equal(result.breakdown[2].status, "UNANSWERED");
+    assert.equal(result.breakdown[3].marksAwarded, 0); // Q4 multiple marked
+    assert.equal(result.breakdown[3].status, "MULTIPLE_MARKED");
+    assert.equal(result.breakdown[4].marksAwarded, 0); // Q5 multiple marked
+    assert.equal(result.breakdown[4].status, "MULTIPLE_MARKED");
+    assert.equal(result.score, 3);
+  });
 });

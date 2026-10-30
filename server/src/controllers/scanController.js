@@ -215,22 +215,31 @@ export const processScan = async (req, res, next) => {
     // Convert answerKey Map from Mongoose/object to plain JS object
     const answerKeyObj = exam.answerKey instanceof Map ? Object.fromEntries(exam.answerKey) : exam.answerKey;
 
-    // Evaluate score using separate backend ScoringEngine
+    // Extract questions with multiple marked options (2 or more / more than 2 options marked)
+    const multipleMarkedQuestions = (cvData.questions || [])
+      .filter((q) => q.status === "MULTIPLE_MARKED" || (q.marked_options && q.marked_options.length >= 2))
+      .map((q) => q.question_number);
+
+    // Genuinely ambiguous fill questions requiring teacher check
+    const ambiguousQuestions = reviewQuestionNumbers.filter((q) => !multipleMarkedQuestions.includes(q));
+
+    // Evaluate score using separate backend ScoringEngine (unanswered and multiple marked award 0 marks)
     const scoringEngine = new ScoringEngine({
-      correctMarks: exam.markingScheme.correctMarks,
-      incorrectMarks: exam.markingScheme.incorrectMarks,
-      unansweredMarks: exam.markingScheme.unansweredMarks,
+      correctMarks: exam.markingScheme?.correctMarks ?? 1,
+      incorrectMarks: exam.markingScheme?.incorrectMarks ?? 0,
+      unansweredMarks: 0,
     });
 
     const evalResult = scoringEngine.evaluate({
       answerKey: answerKeyObj,
       detectedAnswers,
-      unresolvedReviewQuestions: reviewQuestionNumbers,
+      unresolvedReviewQuestions: ambiguousQuestions,
+      multipleMarkedQuestions,
     });
 
     const reviewReasons = [];
     if (evalResult.reviewRequired) {
-      reviewReasons.push(`Answer key review required on question(s): ${reviewQuestionNumbers.join(", ")}`);
+      reviewReasons.push(`Answer key review required on question(s): ${ambiguousQuestions.join(", ")}`);
     }
     if (isRollFlagged && rollReason) {
       reviewReasons.push(`Roll Number: ${rollReason}`);
@@ -264,8 +273,8 @@ export const processScan = async (req, res, next) => {
       scanMetadata: {
         sharpness: cvData.diagnostics?.sharpness_score,
         processingTimeMs: cvData.diagnostics?.processing_time_ms,
-        ambiguousQuestions: reviewQuestionNumbers,
-        multipleMarkedQuestions: cvData.summary?.multiple_marked_count > 0 ? reviewQuestionNumbers : [],
+        ambiguousQuestions,
+        multipleMarkedQuestions,
         annotatedImageBase64: cvData.annotated_image_base64,
         headerImageBase64: headerB64,
         nameImageBase64,
@@ -476,11 +485,18 @@ export const processBatchScans = async (req, res, next) => {
               }
             }
 
-            // 3. Score Evaluation
+            // 3. Score Evaluation (extract multiple-marked and ambiguous questions)
+            const multipleMarkedQuestions = (cvData.questions || [])
+              .filter((q) => q.status === "MULTIPLE_MARKED" || (q.marked_options && q.marked_options.length >= 2))
+              .map((q) => q.question_number);
+
+            const ambiguousQuestions = reviewQuestionNumbers.filter((q) => !multipleMarkedQuestions.includes(q));
+
             const evalResult = scoringEngine.evaluate({
               answerKey: answerKeyObj,
               detectedAnswers,
-              unresolvedReviewQuestions: reviewQuestionNumbers,
+              unresolvedReviewQuestions: ambiguousQuestions,
+              multipleMarkedQuestions,
             });
 
             const batchReviewReasons = [];
@@ -496,7 +512,7 @@ export const processBatchScans = async (req, res, next) => {
               }
             }
             if (evalResult.reviewRequired) {
-              batchReviewReasons.push(`Answer key review required on question(s): ${reviewQuestionNumbers.join(", ")}`);
+              batchReviewReasons.push(`Answer key review required on question(s): ${ambiguousQuestions.join(", ")}`);
             }
             if (isRollFlagged && rollReason) {
               batchReviewReasons.push(`Roll Number: ${rollReason}`);
@@ -531,8 +547,8 @@ export const processBatchScans = async (req, res, next) => {
               scanMetadata: {
                 sharpness: cvData.diagnostics?.sharpness_score,
                 processingTimeMs: cvData.diagnostics?.processing_time_ms,
-                ambiguousQuestions: reviewQuestionNumbers,
-                multipleMarkedQuestions: cvData.summary?.multiple_marked_count > 0 ? reviewQuestionNumbers : [],
+                ambiguousQuestions,
+                multipleMarkedQuestions,
                 annotatedImageBase64: cvData.annotated_image_base64,
                 headerImageBase64: headerB64,
                 nameImageBase64,
@@ -689,9 +705,14 @@ export const getScanById = async (req, res, next) => {
       return res.status(404).json({ success: false, message: "Scan result not found." });
     }
 
+    const scanObj = typeof scan.toObject === "function" ? scan.toObject() : { ...scan };
+    if (scanObj.scanMetadata && scanObj.scanMetadata.originalImageBase64) {
+      delete scanObj.scanMetadata.originalImageBase64;
+    }
+
     res.status(200).json({
       success: true,
-      data: scan,
+      data: scanObj,
     });
   } catch (error) {
     next(error);
@@ -700,7 +721,7 @@ export const getScanById = async (req, res, next) => {
 
 export const reviewScan = async (req, res, next) => {
   try {
-    const { studentName, rollNumber, correctedAnswers = {} } = req.body;
+    const { studentName, rollNumber, correctedAnswers = {}, finalize = false } = req.body;
     const scan = await dbStore.findScanResultById(req.params.id);
 
     if (!scan) {
@@ -727,11 +748,12 @@ export const reviewScan = async (req, res, next) => {
     // Determine which questions still require review
     const ambiguousList = scan.scanMetadata?.ambiguousQuestions || [];
     const remainingPending = ambiguousList.filter((q) => !Object.prototype.hasOwnProperty.call(updatedCorrected, String(q)));
+    const multipleList = scan.scanMetadata?.multipleMarkedQuestions || [];
 
     const scoringEngine = new ScoringEngine({
-      correctMarks: exam.markingScheme.correctMarks,
-      incorrectMarks: exam.markingScheme.incorrectMarks,
-      unansweredMarks: exam.markingScheme.unansweredMarks,
+      correctMarks: exam.markingScheme?.correctMarks ?? 1,
+      incorrectMarks: exam.markingScheme?.incorrectMarks ?? 0,
+      unansweredMarks: 0,
     });
 
     const evalResult = scoringEngine.evaluate({
@@ -739,6 +761,7 @@ export const reviewScan = async (req, res, next) => {
       detectedAnswers: detectedObj,
       correctedAnswers: updatedCorrected,
       unresolvedReviewQuestions: remainingPending,
+      multipleMarkedQuestions: multipleList,
     });
 
     // Check if candidate metadata has been verified by the teacher
@@ -749,15 +772,16 @@ export const reviewScan = async (req, res, next) => {
       manuallyCorrected: isManualIdentityEdit ? true : Boolean(prevMetadata.manuallyCorrected),
       originalRecognizedName: prevMetadata.originalRecognizedName || prevMetadata.detectedStudentName || scan.studentName,
       originalRecognizedRoll: prevMetadata.originalRecognizedRoll || prevMetadata.detectedRollNumber || scan.rollNumber,
-      nameFlagged: studentName !== undefined ? false : prevMetadata.nameFlagged,
-      rollNumberFlagged: rollNumber !== undefined ? false : prevMetadata.rollNumberFlagged,
-      nameCrossedOutDetected: studentName !== undefined ? false : prevMetadata.nameCrossedOutDetected,
-      rollCrossedOutDetected: rollNumber !== undefined ? false : prevMetadata.rollCrossedOutDetected,
-      nameCorrectionSuspected: studentName !== undefined ? false : prevMetadata.nameCorrectionSuspected,
-      rollCorrectionSuspected: rollNumber !== undefined ? false : prevMetadata.rollCorrectionSuspected,
+      nameFlagged: finalize || studentName !== undefined ? false : prevMetadata.nameFlagged,
+      rollNumberFlagged: finalize || rollNumber !== undefined ? false : prevMetadata.rollNumberFlagged,
+      nameCrossedOutDetected: finalize || studentName !== undefined ? false : prevMetadata.nameCrossedOutDetected,
+      rollCrossedOutDetected: finalize || rollNumber !== undefined ? false : prevMetadata.rollCrossedOutDetected,
+      nameCorrectionSuspected: finalize || studentName !== undefined ? false : prevMetadata.nameCorrectionSuspected,
+      rollCorrectionSuspected: finalize || rollNumber !== undefined ? false : prevMetadata.rollCorrectionSuspected,
     };
 
-    const reviewStillRequired = evalResult.reviewRequired || updatedMetadata.nameFlagged || updatedMetadata.rollNumberFlagged;
+    const reviewStillRequired = finalize ? false : (evalResult.reviewRequired || updatedMetadata.nameFlagged || updatedMetadata.rollNumberFlagged);
+    const reviewStatus = finalize ? "CONFIRMED" : (reviewStillRequired ? "PENDING" : "RESOLVED");
 
     const updated = await dbStore.updateScanResult(req.params.id, {
       studentName: studentName || scan.studentName,
@@ -770,13 +794,13 @@ export const reviewScan = async (req, res, next) => {
       maximumMarks: evalResult.maximumMarks,
       percentage: evalResult.percentage,
       reviewRequired: reviewStillRequired,
-      reviewStatus: reviewStillRequired ? "PENDING" : "RESOLVED",
+      reviewStatus,
       scanMetadata: updatedMetadata,
     });
 
     res.status(200).json({
       success: true,
-      message: "Scan result updated and recalculated successfully.",
+      message: finalize ? "Scan result confirmed and finalized." : "Scan result updated and recalculated successfully.",
       data: {
         ...(typeof updated.toObject === "function" ? updated.toObject() : updated),
         evaluation: evalResult,
@@ -844,6 +868,7 @@ export const getExamResults = async (req, res, next) => {
 
     const results = await dbStore.findScanResults(query, sortOptions, {
       "scanMetadata.annotatedImageBase64": 0,
+      "scanMetadata.originalImageBase64": 0,
       "scanMetadata.headerImageBase64": 0,
       "scanMetadata.nameImageBase64": 0,
       "scanMetadata.rollImageBase64": 0,
@@ -890,6 +915,63 @@ export const exportExamResultsCSV = async (req, res, next) => {
     res.setHeader("Content-Type", "text/csv");
     res.setHeader("Content-Disposition", `attachment; filename="Results_${exam.title.replace(/\s+/g, "_")}.csv"`);
     res.status(200).send(csv);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const deleteScan = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const deleted = await dbStore.deleteScanResult(id);
+    if (!deleted) {
+      return res.status(404).json({ success: false, message: "Scan result not found." });
+    }
+    res.status(200).json({
+      success: true,
+      message: "Student scan result deleted successfully.",
+      data: {
+        _id: id,
+        deleted: true,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const deleteBatchScans = async (req, res, next) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ success: false, message: "A non-empty array of scan IDs is required." });
+    }
+    const deletedCount = await dbStore.deleteScanResultsBatch(ids);
+    res.status(200).json({
+      success: true,
+      message: `Successfully deleted ${deletedCount} student scan result(s).`,
+      data: { deletedCount },
+      deletedCount,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const deleteAllScansForExam = async (req, res, next) => {
+  try {
+    const { examId } = req.params;
+    const exam = await dbStore.findExamById(examId);
+    if (!exam) {
+      return res.status(404).json({ success: false, message: "Exam not found." });
+    }
+    const deletedCount = await dbStore.deleteScanResultsByExam(examId);
+    res.status(200).json({
+      success: true,
+      message: `Successfully cleared all ${deletedCount} student scan result(s) for this exam.`,
+      data: { deletedCount },
+      deletedCount,
+    });
   } catch (error) {
     next(error);
   }

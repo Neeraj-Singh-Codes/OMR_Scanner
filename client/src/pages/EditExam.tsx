@@ -49,8 +49,15 @@ export const EditExam: React.FC = () => {
         setRosterText(data.roster.map((r: any) => `${r.rollNumber}, ${r.studentName}`).join("\n"));
       }
 
-      const rawKey = data.answerKey instanceof Map ? Object.fromEntries(data.answerKey) : data.answerKey || {};
-      setAnswerKey(rawKey as Record<string, OptionLetter>);
+      let rawKey: Record<string, OptionLetter> = {};
+      if (data.answerKey) {
+        if (data.answerKey instanceof Map) {
+          rawKey = Object.fromEntries(data.answerKey);
+        } else if (typeof data.answerKey === "object") {
+          rawKey = { ...data.answerKey };
+        }
+      }
+      setAnswerKey(rawKey);
     } catch (err: any) {
       console.error("Failed to load exam:", err);
       setError("Failed to load exam details for editing.");

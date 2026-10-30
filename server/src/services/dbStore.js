@@ -69,6 +69,9 @@ export const dbStore = {
     if (isMongoConnected()) {
       const exam = await Exam.findById(id);
       if (!exam) return null;
+      if (updateData.answerKey) {
+        exam.set("answerKey", updateData.answerKey);
+      }
       Object.assign(exam, updateData);
       return await exam.save();
     }
@@ -156,6 +159,44 @@ export const dbStore = {
     return updated;
   },
 
+  async deleteScanResult(id) {
+    if (isMongoConnected()) {
+      return await ScanResult.findByIdAndDelete(id);
+    }
+    const existed = memoryScanResults.has(String(id));
+    memoryScanResults.delete(String(id));
+    return existed ? { _id: id } : null;
+  },
+
+  async deleteScanResultsBatch(ids = []) {
+    if (isMongoConnected()) {
+      const res = await ScanResult.deleteMany({ _id: { $in: ids } });
+      return res.deletedCount;
+    }
+    let count = 0;
+    for (const id of ids) {
+      if (memoryScanResults.delete(String(id))) {
+        count++;
+      }
+    }
+    return count;
+  },
+
+  async deleteScanResultsByExam(examId) {
+    if (isMongoConnected()) {
+      const res = await ScanResult.deleteMany({ examId });
+      return res.deletedCount;
+    }
+    let count = 0;
+    for (const [key, scan] of memoryScanResults.entries()) {
+      if (String(scan.examId) === String(examId)) {
+        memoryScanResults.delete(key);
+        count++;
+      }
+    }
+    return count;
+  },
+
   async findScanResults(query = {}, sortOptions = { score: -1 }, projection = null) {
     if (isMongoConnected()) {
       let q = ScanResult.find(query);
@@ -197,6 +238,24 @@ export const dbStore = {
       const valB = b[sortKey] ?? 0;
       return sortDir === 1 ? (valA > valB ? 1 : -1) : valA < valB ? 1 : -1;
     });
+
+    if (projection && typeof projection === "object") {
+      const keysToOmit = Object.keys(projection).filter((k) => projection[k] === 0);
+      if (keysToOmit.length > 0) {
+        list = list.map((item) => {
+          const clone = { ...item, scanMetadata: { ...item.scanMetadata } };
+          for (const key of keysToOmit) {
+            if (key.startsWith("scanMetadata.")) {
+              const subKey = key.replace("scanMetadata.", "");
+              delete clone.scanMetadata[subKey];
+            } else {
+              delete clone[key];
+            }
+          }
+          return clone;
+        });
+      }
+    }
 
     return list;
   },

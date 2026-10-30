@@ -27,6 +27,11 @@ export const ExamService = {
     return res.data.data;
   },
 
+  async delete(id: string): Promise<boolean> {
+    const res = await api.delete<{ success: boolean; message: string }>(`/exams/${id}`);
+    return res.data.success;
+  },
+
   getTemplatePdfUrl(id: string): string {
     const base = import.meta.env.VITE_API_BASE_URL || "/api";
     return `${base}/exams/${id}/template`;
@@ -82,6 +87,7 @@ export const ScanService = {
       studentName?: string;
       rollNumber?: string;
       correctedAnswers?: Record<string, string | null>;
+      finalize?: boolean;
     }
   ): Promise<ScanResult> {
     const res = await api.put<{ success: boolean; data: ScanResult }>(`/scans/${id}/review`, data);
@@ -91,6 +97,26 @@ export const ScanService = {
   async finalize(id: string): Promise<ScanResult> {
     const res = await api.post<{ success: boolean; data: ScanResult }>(`/scans/${id}/finalize`);
     return res.data.data;
+  },
+
+  async delete(id: string): Promise<boolean> {
+    const res = await api.delete<{ success: boolean; message: string }>(`/scans/${id}`);
+    return res.data.success;
+  },
+
+  async deleteBatch(ids: string[]): Promise<number> {
+    const res = await api.post<{ success: boolean; deletedCount: number; message: string }>(
+      "/scans/delete-batch",
+      { ids }
+    );
+    return res.data.deletedCount;
+  },
+
+  async deleteAllForExam(examId: string): Promise<number> {
+    const res = await api.delete<{ success: boolean; deletedCount: number; message: string }>(
+      `/scans/exam/${examId}`
+    );
+    return res.data.deletedCount;
   },
 
   async getExamResults(

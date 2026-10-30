@@ -6,6 +6,9 @@ import {
   getScanById,
   reviewScan,
   finalizeScan,
+  deleteScan,
+  deleteBatchScans,
+  deleteAllScansForExam,
 } from "../controllers/scanController.js";
 import { validateBody } from "../middleware/validate.js";
 import { reviewScanSchema } from "../validators/scanValidator.js";
@@ -31,6 +34,9 @@ const upload = multer({
 
 router.post("/", upload.single("image"), processScan);
 router.post("/batch", upload.array("images", 100), processBatchScans);
+router.post("/delete-batch", deleteBatchScans);
+router.delete("/exam/:examId", deleteAllScansForExam);
+router.delete("/:id", deleteScan);
 router.get("/:id", getScanById);
 router.put("/:id/review", validateBody(reviewScanSchema), reviewScan);
 router.post("/:id/finalize", finalizeScan);

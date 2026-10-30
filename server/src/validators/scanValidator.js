@@ -8,4 +8,5 @@ export const reviewScanSchema = z.object({
   studentName: z.string().trim().optional(),
   rollNumber: z.string().trim().optional(),
   correctedAnswers: z.record(z.string(), optionLetterOrNull).optional(),
+  finalize: z.boolean().optional(),
 });

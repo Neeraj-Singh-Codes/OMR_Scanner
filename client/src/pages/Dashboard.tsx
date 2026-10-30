@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
-import { PlusCircle, Camera, FileText, Download, CheckCircle, AlertTriangle, ArrowRight, BookOpen, Edit, Sparkles } from "lucide-react";
+import { PlusCircle, Camera, FileText, Download, CheckCircle, AlertTriangle, ArrowRight, BookOpen, Edit, Sparkles, Trash2 } from "lucide-react";
 import { ExamService } from "../services/api";
 import { Exam } from "../types";
 
@@ -21,6 +21,23 @@ export const Dashboard: React.FC = () => {
       console.error("Failed to load exams:", err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleDeleteExam = async (examId: string, title: string) => {
+    if (
+      !window.confirm(
+        `Are you sure you want to delete the examination "${title}"?\n\nThis will permanently delete the exam configuration and ALL scanned student answer sheets associated with it.`
+      )
+    ) {
+      return;
+    }
+    try {
+      await ExamService.delete(examId);
+      setExams((prev) => prev.filter((e) => e._id !== examId));
+    } catch (err: any) {
+      console.error("Failed to delete exam:", err);
+      alert(err.response?.data?.message || "Failed to delete examination.");
     }
   };
 
@@ -224,6 +241,16 @@ export const Dashboard: React.FC = () => {
                     View
                     <ArrowRight className="w-3.5 h-3.5" />
                   </Link>
+
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteExam(exam._id, exam.title)}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-rose-700 dark:text-rose-400 bg-rose-50/60 dark:bg-rose-950/40 hover:bg-rose-100 dark:hover:bg-rose-900/50 rounded-lg transition-colors border border-rose-200/40 dark:border-rose-900/40"
+                    title="Delete Exam and all its student sheets"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-rose-500" />
+                    Delete
+                  </button>
                 </div>
               </div>
             ))}

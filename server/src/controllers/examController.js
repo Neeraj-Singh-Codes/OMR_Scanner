@@ -19,10 +19,18 @@ export const createExam = async (req, res, next) => {
       roster: roster || [],
     });
 
+    const examDoc = typeof exam.toObject === "function" ? exam.toObject() : { ...exam };
+    const answerKeyObj = examDoc.answerKey instanceof Map
+      ? Object.fromEntries(examDoc.answerKey)
+      : (exam.answerKey instanceof Map ? Object.fromEntries(exam.answerKey) : examDoc.answerKey || {});
+
     res.status(201).json({
       success: true,
       message: "Exam created successfully.",
-      data: exam,
+      data: {
+        ...examDoc,
+        answerKey: answerKeyObj,
+      },
     });
   } catch (error) {
     next(error);
@@ -37,8 +45,14 @@ export const getExams = async (req, res, next) => {
       exams.map(async (exam) => {
         const totalScans = await dbStore.countScans({ examId: exam._id });
         const pendingReviews = await dbStore.countScans({ examId: exam._id, reviewRequired: true });
+        const examDoc = typeof exam.toObject === "function" ? exam.toObject() : { ...exam };
+        const answerKeyObj = examDoc.answerKey instanceof Map
+          ? Object.fromEntries(examDoc.answerKey)
+          : (exam.answerKey instanceof Map ? Object.fromEntries(exam.answerKey) : examDoc.answerKey || {});
+
         return {
-          ...exam,
+          ...examDoc,
+          answerKey: answerKeyObj,
           totalScans,
           pendingReviews,
         };
@@ -64,10 +78,16 @@ export const getExamById = async (req, res, next) => {
     const totalScans = await dbStore.countScans({ examId: exam._id });
     const pendingReviews = await dbStore.countScans({ examId: exam._id, reviewRequired: true });
 
+    const examDoc = typeof exam.toObject === "function" ? exam.toObject() : { ...exam };
+    const answerKeyObj = examDoc.answerKey instanceof Map
+      ? Object.fromEntries(examDoc.answerKey)
+      : (exam.answerKey instanceof Map ? Object.fromEntries(exam.answerKey) : examDoc.answerKey || {});
+
     res.status(200).json({
       success: true,
       data: {
-        ...(typeof exam.toObject === "function" ? exam.toObject() : exam),
+        ...examDoc,
+        answerKey: answerKeyObj,
         totalScans,
         pendingReviews,
       },
@@ -112,9 +132,9 @@ export const updateExam = async (req, res, next) => {
       }
 
       const scoringEngine = new ScoringEngine({
-        correctMarks: updated.markingScheme.correctMarks,
-        incorrectMarks: updated.markingScheme.incorrectMarks,
-        unansweredMarks: updated.markingScheme.unansweredMarks,
+        correctMarks: updated.markingScheme?.correctMarks ?? 1,
+        incorrectMarks: updated.markingScheme?.incorrectMarks ?? 0,
+        unansweredMarks: 0,
       });
 
       for (const scan of existingScans) {
@@ -125,12 +145,15 @@ export const updateExam = async (req, res, next) => {
         const remainingPending = ambiguousList
           .filter((q) => q <= totalQ)
           .filter((q) => !Object.prototype.hasOwnProperty.call(correctedObj, String(q)));
+        const multipleList = (scan.scanMetadata?.multipleMarkedQuestions || [])
+          .filter((q) => q <= totalQ);
 
         const evalResult = scoringEngine.evaluate({
           answerKey: answerKeyObj,
           detectedAnswers: detectedObj,
           correctedAnswers: correctedObj,
           unresolvedReviewQuestions: remainingPending,
+          multipleMarkedQuestions: multipleList,
         });
 
         await dbStore.updateScanResult(scan._id, {
@@ -146,10 +169,18 @@ export const updateExam = async (req, res, next) => {
       }
     }
 
+    const updatedDoc = typeof updated.toObject === "function" ? updated.toObject() : { ...updated };
+    const answerKeyObj = updatedDoc.answerKey instanceof Map
+      ? Object.fromEntries(updatedDoc.answerKey)
+      : (updated.answerKey instanceof Map ? Object.fromEntries(updated.answerKey) : updatedDoc.answerKey || {});
+
     res.status(200).json({
       success: true,
       message: "Exam updated successfully.",
-      data: updated,
+      data: {
+        ...updatedDoc,
+        answerKey: answerKeyObj,
+      },
     });
   } catch (error) {
     next(error);
