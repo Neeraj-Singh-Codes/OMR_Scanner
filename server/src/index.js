@@ -56,7 +56,7 @@ export const startServer = async () => {
       console.warn("MongoDB connection warning: Running without persistent DB until MongoDB is started.", dbErr.message);
     }
 
-    const serverInstance = app.listen(PORT, () => {
+    const serverInstance = app.listen(PORT, "0.0.0.0", () => {
       console.log(`OMR Express Server running on http://localhost:${PORT}`);
     });
     return serverInstance;

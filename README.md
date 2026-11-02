@@ -129,6 +129,28 @@ python -m uvicorn scanner.app.main:app --host 0.0.0.0 --port 8000
 - Swagger API Docs: `http://localhost:8000/docs`
 - Health check: `http://localhost:8000/health`
 
+### Step 0: Start Docker Database (MongoDB)
+Start the MongoDB container with persistent volume data and optional web viewer:
+```powershell
+# Start MongoDB & Mongo-Express GUI in background
+npm run db:up   # or: docker compose up -d
+
+# Check database container status
+npm run db:status
+```
+- MongoDB runs on port `27017`
+- Mongo-Express Web GUI runs on port `8081` (accessible at `http://localhost:8081` or `http://<YOUR_IP>:8081`)
+
+### Step 1: Start the Python Computer Vision Service
+Open a PowerShell terminal:
+```powershell
+cd c:\Users\Dell\Documents\OMR_Scanner
+python -m pip install -r scanner/requirements.txt
+python -m uvicorn scanner.app.main:app --host 0.0.0.0 --port 8000
+```
+- Swagger API Docs: `http://localhost:8000/docs`
+- Health check: `http://localhost:8000/health`
+
 ### Step 2: Start the Express Backend Server
 Open a second PowerShell terminal:
 ```powershell
@@ -136,8 +158,7 @@ cd c:\Users\Dell\Documents\OMR_Scanner\server
 npm install
 npm run dev
 ```
-- Express API runs on `http://localhost:5000`
-- If MongoDB is installed locally or via Atlas, it automatically connects. If running offline without MongoDB, the server transparently uses an in-memory repository fallback so you can test all features immediately.
+- Express API runs on `http://localhost:5000` (listening on `0.0.0.0` for network access)
 
 ### Step 3: Start the React Frontend Application
 Open a third PowerShell terminal:
@@ -146,7 +167,22 @@ cd c:\Users\Dell\Documents\OMR_Scanner\client
 npm install
 npm run dev
 ```
-- Web application available at `http://localhost:3000` (and on your local network for mobile phone browser testing).
+- Web application available at `http://localhost:3000` (and `http://<YOUR_IP>:3000` for other machines on the same network).
+
+---
+
+### One-Click Launch (All Services + Docker)
+Alternatively, start everything in one step:
+```powershell
+.\start.ps1
+```
+The script automatically:
+1. Detects your machine's local Wi-Fi / Ethernet IP (e.g. `192.168.1.19`).
+2. Starts Docker MongoDB on port `27017` and Mongo-Express on `8081`.
+3. Launches the Python microservice on port `8000`.
+4. Launches the Express API backend on port `5000`.
+5. Launches the Vite client on port `3000` bound to `0.0.0.0`.
+6. Prints the exact network URLs for accessing from other devices.
 
 ---
 

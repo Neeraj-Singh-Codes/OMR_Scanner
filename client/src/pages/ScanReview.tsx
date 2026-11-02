@@ -32,18 +32,20 @@ import {
 
 } from "lucide-react";
 
-import { ScanService } from "../services/api";
+import { ScanService, ExamService } from "../services/api";
 
-import { ScanResult, OptionLetter } from "../types";
+import { ScanResult, OptionLetter, Exam } from "../types";
 
 // Module-level in-memory cache for fast, instant student switching
 const scanCache = new Map<string, ScanResult>();
+const examCache = new Map<string, Exam>();
 
 export const ScanReview: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
 
   const [scan, setScan] = useState<ScanResult | null>(null);
+  const [exam, setExam] = useState<Exam | null>(null);
   const [siblingScans, setSiblingScans] = useState<ScanResult[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -90,8 +92,30 @@ export const ScanReview: React.FC = () => {
         setCorrections(data.correctedAnswers || {});
       }
 
-      // 3. Load sibling scans only once per exam
+      // 3. Extract and load exam details (including official answer key and total questions)
       const examId = typeof data.examId === "string" ? data.examId : (data.examId as any)?._id;
+      if (
+        data.examId &&
+        typeof data.examId === "object" &&
+        (data.examId as any).answerKey &&
+        Object.keys((data.examId as any).answerKey).length > 0
+      ) {
+        setExam(data.examId as Exam);
+        if (examId) examCache.set(examId, data.examId as Exam);
+      } else if (examId) {
+        const cachedExam = examCache.get(examId);
+        if (cachedExam) {
+          setExam(cachedExam);
+        } else {
+          try {
+            const fullExam = await ExamService.getById(examId);
+            setExam(fullExam);
+            examCache.set(examId, fullExam);
+          } catch (eErr) {
+            console.error("Failed to load exam details for scan:", eErr);
+          }
+        }
+      }
       if (examId && (loadedExamIdRef.current !== examId || siblingScans.length === 0)) {
         try {
           const siblings = await ScanService.getExamResults(examId);
@@ -210,9 +234,11 @@ export const ScanReview: React.FC = () => {
         correctedAnswers: corrections,
         finalize: false,
       });
-      setScan(updated);
-      scanCache.set(id, updated);
-      setSiblingScans((prev) => prev.map((s) => (s._id === id ? updated : s)));
+      const resolvedExam = (updated.examId && typeof updated.examId === "object") ? (updated.examId as Exam) : (exam || updated.examId);
+      const mergedScan = { ...updated, examId: resolvedExam };
+      setScan(mergedScan);
+      scanCache.set(id, mergedScan);
+      setSiblingScans((prev) => prev.map((s) => (s._id === id ? mergedScan : s)));
     } catch (err: any) {
       console.error("Save review error:", err);
       setError(err.response?.data?.message || "Failed to update review.");
@@ -233,9 +259,11 @@ export const ScanReview: React.FC = () => {
         correctedAnswers: corrections,
         finalize: true,
       });
-      setScan(finalized);
-      scanCache.set(id, finalized);
-      setSiblingScans((prev) => prev.map((s) => (s._id === id ? finalized : s)));
+      const resolvedExam = (finalized.examId && typeof finalized.examId === "object") ? (finalized.examId as Exam) : (exam || finalized.examId);
+      const mergedScan = { ...finalized, examId: resolvedExam };
+      setScan(mergedScan);
+      scanCache.set(id, mergedScan);
+      setSiblingScans((prev) => prev.map((s) => (s._id === id ? mergedScan : s)));
       const examIdStr = typeof finalized.examId === "string" ? finalized.examId : finalized.examId._id;
       navigate(`/exams/${examIdStr}`);
     } catch (err: any) {
@@ -285,9 +313,11 @@ export const ScanReview: React.FC = () => {
       // Fire the single combined finalize request in the background
       const finalizePromise = ScanService.review(id, reviewPayload)
         .then((finalized) => {
-          scanCache.set(id, finalized);
-          setSiblingScans((prev) => prev.map((s) => (s._id === id ? finalized : s)));
-          return finalized;
+          const resolvedExam = (finalized.examId && typeof finalized.examId === "object") ? (finalized.examId as Exam) : (exam || finalized.examId);
+          const merged = { ...finalized, examId: resolvedExam };
+          scanCache.set(id, merged);
+          setSiblingScans((prev) => prev.map((s) => (s._id === id ? merged : s)));
+          return merged;
         })
         .catch((err) => {
           console.error("Background finalize error:", err);
@@ -391,11 +421,14 @@ export const ScanReview: React.FC = () => {
 
 
 
-  const exam = scan.examId as any;
+  const activeExam = exam || (typeof scan.examId === "object" ? (scan.examId as any) : null);
 
-  const examIdStr = typeof exam === "string" ? exam : exam?._id;
+  const examIdStr = typeof scan.examId === "string" ? scan.examId : scan.examId?._id || activeExam?._id;
 
-  const totalQuestions = exam?.totalQuestions || 30;
+  const totalQuestions =
+    activeExam?.totalQuestions ||
+    (activeExam?.answerKey ? Object.keys(activeExam.answerKey).length : 0) ||
+    20;
 
   const ambiguousQuestions = scan.scanMetadata?.ambiguousQuestions || [];
 
@@ -441,7 +474,7 @@ export const ScanReview: React.FC = () => {
 
           <p className="text-xs text-slate-500 dark:text-slate-400">
 
-            Exam: <strong className="text-slate-700 dark:text-slate-300">{exam?.title || "Assessment"}</strong> ({exam?.subject})
+            Exam: <strong className="text-slate-700 dark:text-slate-300">{activeExam?.title || "Assessment"}</strong> ({activeExam?.subject})
 
           </p>
 
@@ -1379,11 +1412,10 @@ export const ScanReview: React.FC = () => {
 
 
 
-                const officialAnswer = exam?.answerKey ? exam.answerKey[qKey] : undefined;
-
-                const isCorrect = currentOpt && officialAnswer && currentOpt === officialAnswer;
-
-                const isIncorrect = currentOpt && officialAnswer && currentOpt !== officialAnswer;
+                const rawOfficial = activeExam?.answerKey ? (activeExam.answerKey as any)[qKey] : undefined;
+                const officialAnswer = rawOfficial ? String(rawOfficial).toUpperCase() : undefined;
+                const isCorrect = Boolean(currentOpt && officialAnswer && currentOpt.toUpperCase() === officialAnswer);
+                const isIncorrect = Boolean(currentOpt && officialAnswer && currentOpt.toUpperCase() !== officialAnswer);
 
 
 
@@ -1435,13 +1467,17 @@ export const ScanReview: React.FC = () => {
 
                                   ? "bg-emerald-100 dark:bg-emerald-950/80 text-emerald-700 dark:text-emerald-300"
 
-                                  : "bg-red-100 dark:bg-red-950/80 text-red-700 dark:text-red-300"
+                                  : isIncorrect
+
+                                  ? "bg-red-100 dark:bg-red-950/80 text-red-700 dark:text-red-300"
+
+                                  : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400"
 
                               }`}
 
                             >
 
-                              {isCorrect ? "Correct" : "Incorrect"}
+                              {isCorrect ? "Correct" : isIncorrect ? "Incorrect" : "Marked"}
 
                             </span>
 

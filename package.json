@@ -4,6 +4,11 @@
   "private": true,
   "scripts": {
     "install:all": "pip install -r scanner/requirements.txt && npm --prefix server install && npm --prefix client install",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
+    "db:logs": "docker compose logs -f mongodb",
+    "db:status": "docker compose ps",
+    "start:services": "powershell -ExecutionPolicy Bypass -File ./start.ps1",
     "test:server": "npm --prefix server test",
     "test:scanner": "python -m pytest scanner/app/tests",
     "test": "npm --prefix server test && python -m pytest scanner/app/tests",

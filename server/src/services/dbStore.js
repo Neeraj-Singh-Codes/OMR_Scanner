@@ -106,12 +106,15 @@ export const dbStore = {
   async createScanResult(data) {
     if (isMongoConnected()) {
       const scan = new ScanResult(data);
-      return await scan.save();
+      const saved = await scan.save();
+      return await ScanResult.findById(saved._id).populate('examId');
     }
     const id = generateId();
+    const exam = memoryExams.get(String(data.examId)) || data.examId;
     const doc = {
       _id: id,
       ...data,
+      examId: exam,
       createdAt: new Date(),
       updatedAt: new Date(),
       toObject() {
@@ -143,13 +146,16 @@ export const dbStore = {
       const scan = await ScanResult.findById(id);
       if (!scan) return null;
       Object.assign(scan, updateData);
-      return await scan.save();
+      const saved = await scan.save();
+      return await ScanResult.findById(saved._id).populate('examId');
     }
     const existing = memoryScanResults.get(String(id));
     if (!existing) return null;
+    const exam = memoryExams.get(String(existing.examId)) || existing.examId;
     const updated = {
       ...existing,
       ...updateData,
+      examId: exam,
       updatedAt: new Date(),
       toObject() {
         return { ...this };

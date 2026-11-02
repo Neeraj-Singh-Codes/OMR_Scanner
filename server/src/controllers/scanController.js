@@ -6,6 +6,22 @@ import axios from "axios";
 
 const VISION_SERVICE_URL = (process.env.PYTHON_VISION_SERVICE_URL || "http://127.0.0.1:8000").replace("localhost", "127.0.0.1");
 
+export const formatScanResponse = (scan) => {
+  if (!scan) return null;
+  const scanObj = typeof scan.toObject === "function" ? scan.toObject() : { ...scan };
+  if (scanObj.scanMetadata && scanObj.scanMetadata.originalImageBase64) {
+    delete scanObj.scanMetadata.originalImageBase64;
+  }
+  if (scanObj.examId && typeof scanObj.examId === "object") {
+    const examObj = typeof scanObj.examId.toObject === "function" ? scanObj.examId.toObject() : { ...scanObj.examId };
+    if (examObj.answerKey instanceof Map) {
+      examObj.answerKey = Object.fromEntries(examObj.answerKey);
+    }
+    scanObj.examId = examObj;
+  }
+  return scanObj;
+};
+
 export const processScan = async (req, res, next) => {
   try {
     const { examId, studentName = "Unassigned Student", rollNumber = "UNASSIGNED" } = req.body;
@@ -215,13 +231,24 @@ export const processScan = async (req, res, next) => {
     // Convert answerKey Map from Mongoose/object to plain JS object
     const answerKeyObj = exam.answerKey instanceof Map ? Object.fromEntries(exam.answerKey) : exam.answerKey;
 
+    // Trim detected answers to totalQuestions of the exam
+    const maxQ = exam.totalQuestions || (answerKeyObj ? Object.keys(answerKeyObj).length : 30);
+    const trimmedDetectedAnswers = {};
+    for (let q = 1; q <= maxQ; q++) {
+      const qKey = String(q);
+      trimmedDetectedAnswers[qKey] = detectedAnswers[qKey] ?? null;
+    }
+
     // Extract questions with multiple marked options (2 or more / more than 2 options marked)
     const multipleMarkedQuestions = (cvData.questions || [])
+      .filter((q) => q.question_number <= maxQ)
       .filter((q) => q.status === "MULTIPLE_MARKED" || (q.marked_options && q.marked_options.length >= 2))
       .map((q) => q.question_number);
 
     // Genuinely ambiguous fill questions requiring teacher check
-    const ambiguousQuestions = reviewQuestionNumbers.filter((q) => !multipleMarkedQuestions.includes(q));
+    const ambiguousQuestions = reviewQuestionNumbers
+      .filter((q) => q <= maxQ)
+      .filter((q) => !multipleMarkedQuestions.includes(q));
 
     // Evaluate score using separate backend ScoringEngine (unanswered and multiple marked award 0 marks)
     const scoringEngine = new ScoringEngine({
@@ -232,7 +259,7 @@ export const processScan = async (req, res, next) => {
 
     const evalResult = scoringEngine.evaluate({
       answerKey: answerKeyObj,
-      detectedAnswers,
+      detectedAnswers: trimmedDetectedAnswers,
       unresolvedReviewQuestions: ambiguousQuestions,
       multipleMarkedQuestions,
     });
@@ -260,7 +287,7 @@ export const processScan = async (req, res, next) => {
       examId: exam._id,
       studentName: finalStudentName,
       rollNumber: finalRollNumber,
-      detectedAnswers,
+      detectedAnswers: trimmedDetectedAnswers,
       correctedAnswers: {},
       correctCount: evalResult.correctCount,
       incorrectCount: evalResult.incorrectCount,
@@ -325,7 +352,7 @@ export const processScan = async (req, res, next) => {
               : "Sheet scanned with questions requiring teacher verification."
         : "Sheet scanned and evaluated successfully.",
       data: {
-        ...(typeof scanResult.toObject === "function" ? scanResult.toObject() : scanResult),
+        ...formatScanResponse(scanResult),
         evaluation: evalResult,
         cvDiagnostics: cvData.diagnostics,
         candidateOCR: {
@@ -705,14 +732,9 @@ export const getScanById = async (req, res, next) => {
       return res.status(404).json({ success: false, message: "Scan result not found." });
     }
 
-    const scanObj = typeof scan.toObject === "function" ? scan.toObject() : { ...scan };
-    if (scanObj.scanMetadata && scanObj.scanMetadata.originalImageBase64) {
-      delete scanObj.scanMetadata.originalImageBase64;
-    }
-
     res.status(200).json({
       success: true,
-      data: scanObj,
+      data: formatScanResponse(scan),
     });
   } catch (error) {
     next(error);
@@ -745,10 +767,11 @@ export const reviewScan = async (req, res, next) => {
     const answerKeyObj = exam.answerKey instanceof Map ? Object.fromEntries(exam.answerKey) : exam.answerKey;
     const detectedObj = scan.detectedAnswers instanceof Map ? Object.fromEntries(scan.detectedAnswers) : scan.detectedAnswers;
 
-    // Determine which questions still require review
-    const ambiguousList = scan.scanMetadata?.ambiguousQuestions || [];
+    // Determine which questions still require review (scoped to exam totalQuestions)
+    const maxQ = exam.totalQuestions || (answerKeyObj ? Object.keys(answerKeyObj).length : 30);
+    const ambiguousList = (scan.scanMetadata?.ambiguousQuestions || []).filter((q) => q <= maxQ);
     const remainingPending = ambiguousList.filter((q) => !Object.prototype.hasOwnProperty.call(updatedCorrected, String(q)));
-    const multipleList = scan.scanMetadata?.multipleMarkedQuestions || [];
+    const multipleList = (scan.scanMetadata?.multipleMarkedQuestions || []).filter((q) => q <= maxQ);
 
     const scoringEngine = new ScoringEngine({
       correctMarks: exam.markingScheme?.correctMarks ?? 1,
@@ -802,7 +825,7 @@ export const reviewScan = async (req, res, next) => {
       success: true,
       message: finalize ? "Scan result confirmed and finalized." : "Scan result updated and recalculated successfully.",
       data: {
-        ...(typeof updated.toObject === "function" ? updated.toObject() : updated),
+        ...formatScanResponse(updated),
         evaluation: evalResult,
       },
     });
@@ -838,7 +861,7 @@ export const finalizeScan = async (req, res, next) => {
     res.status(200).json({
       success: true,
       message: "Scan result confirmed and finalized.",
-      data: updated,
+      data: formatScanResponse(updated),
     });
   } catch (error) {
     next(error);
