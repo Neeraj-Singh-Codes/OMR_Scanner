@@ -71,29 +71,37 @@ class OMRProcessor:
         else:
             image = image_input
 
-        # 2. Preprocess
+        # 2. Preprocess (keep full resolution for maximum OMR bubble accuracy)
         prep = preprocess_image(image, check_blur=check_blur)
         gray = prep["gray"]
         sharpness = prep["sharpness"]
 
         h, w = image.shape[:2]
 
-        # Intelligent orientation ordering:
+        # Intelligent orientation ordering (using shared RapidOCR singleton on downscaled strip):
         rotations = [0, 180, 270, 90] if h >= w else [0, 90, 270, 180]
         try:
-            from rapidocr_onnxruntime import RapidOCR
-            ocr_quick = RapidOCR()
-            top_sample = image[:int(h * 0.25), :]
-            bot_sample = image[int(h * 0.75):, :]
-            r_top, _ = ocr_quick(top_sample)
-            r_bot, _ = ocr_quick(bot_sample)
-            txt_top = " ".join([r[1] for r in r_top]) if r_top else ""
-            txt_bot = " ".join([r[1] for r in r_bot]) if r_bot else ""
+            from scanner.app.services.candidate_ocr import run_ocr
+
+            def _downscale_strip(strip: np.ndarray, target_w: int = 640) -> np.ndarray:
+                sh, sw = strip.shape[:2]
+                if sw > target_w:
+                    sc = target_w / float(sw)
+                    return cv2.resize(strip, (target_w, max(1, int(round(sh * sc)))), interpolation=cv2.INTER_AREA)
+                return strip
+
             kw = ["OMR", "NAME", "ROLL", "DIVISION", "DATE", "SCORE", "TOTAL", "MARKS"]
+            top_sample = _downscale_strip(image[:int(h * 0.25), :])
+            r_top, _ = run_ocr(top_sample)
+            txt_top = " ".join([r[1] for r in r_top]) if r_top else ""
             top_score = sum(1 for k in kw if k in txt_top.upper())
-            bot_score = sum(1 for k in kw if k in txt_bot.upper())
-            if bot_score > top_score + 1:
-                rotations = [180, 0, 270, 90] if h >= w else [180, 90, 270, 0]
+            if top_score < 2:
+                bot_sample = _downscale_strip(image[int(h * 0.75):, :])
+                r_bot, _ = run_ocr(bot_sample)
+                txt_bot = " ".join([r[1] for r in r_bot]) if r_bot else ""
+                bot_score = sum(1 for k in kw if k in txt_bot.upper())
+                if bot_score > top_score + 1:
+                    rotations = [180, 0, 270, 90] if h >= w else [180, 90, 270, 0]
         except Exception:
             pass
 

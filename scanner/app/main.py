@@ -2,16 +2,30 @@
 FastAPI Entry Point for the OMR Computer Vision Service.
 """
 
+from contextlib import asynccontextmanager
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from scanner.app.routes.scan import router as scan_router
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Pre-warm the singleton RapidOCR engine at startup so the first scan is fast
+    try:
+        from scanner.app.services.candidate_ocr import get_ocr_engine
+        get_ocr_engine()
+    except Exception:
+        pass
+    yield
+
+
 app = FastAPI(
     title="OMR Computer Vision Microservice",
     version="1.0.0",
     description="Dedicated OpenCV image-processing microservice for standardized OMR sheet detection, perspective correction, and bubble recognition.",
+    lifespan=lifespan,
 )
 
 # CORS configuration

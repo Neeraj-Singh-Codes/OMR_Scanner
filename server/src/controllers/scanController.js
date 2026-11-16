@@ -56,7 +56,7 @@ export const processScan = async (req, res, next) => {
           total_questions: exam?.totalQuestions,
           template_type: exam?.templateType,
         },
-        timeout: 60000,
+        timeout: 180000,
       });
     } catch (cvErr) {
       if (!req.file || !req.file.buffer) {
@@ -408,8 +408,9 @@ export const processBatchScans = async (req, res, next) => {
     // Track roll numbers encountered in current batch to detect intra-batch duplicates
     const seenBatchRolls = new Map();
 
-    // Process with controlled concurrency to balance speed and memory
-    const concurrency = 2;
+    // Process sequentially (concurrency = 1) so the local CPU CV service never hits
+    // threadpool contention, RAM swap thrashing, or cascading timeouts on 25-100 sheet batches.
+    const concurrency = 1;
     const files = req.files;
 
     for (let i = 0; i < files.length; i += concurrency) {
@@ -430,7 +431,7 @@ export const processBatchScans = async (req, res, next) => {
                 total_questions: exam?.totalQuestions,
                 template_type: exam?.templateType,
               },
-              timeout: 60000,
+              timeout: 180000,
             });
 
             const cvData = cvResponse.data;
@@ -621,7 +622,7 @@ export const processBatchScans = async (req, res, next) => {
               fileName: file.originalname,
               success: true,
               scanId: scanResult._id,
-              scanResult: typeof scanResult.toObject === "function" ? scanResult.toObject() : scanResult,
+              scanResult: formatScanResponse(scanResult),
               reviewRequired,
               rollNumberFlagged: isRollFlagged,
               rollNumberReason: rollReason,

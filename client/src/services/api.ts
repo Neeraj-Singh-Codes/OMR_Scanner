@@ -62,7 +62,7 @@ export const ScanService = {
     onProgress?: (percent: number) => void
   ): Promise<BatchUploadResponse> {
     const res = await api.post<BatchUploadResponse>("/scans/batch", formData, {
-      timeout: 600000, // 10 minutes timeout for 50-100 sheets
+      timeout: 1800000, // 30 minutes timeout for 50-100 sheet batches
       headers: {
         "Content-Type": "multipart/form-data",
       },

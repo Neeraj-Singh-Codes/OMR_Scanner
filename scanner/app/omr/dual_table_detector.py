@@ -302,15 +302,14 @@ def evaluate_dual_table_omr(
     # Regex OCR fallback if candidate name or roll number remains unassigned
     if candidate_info.get("roll_number") == "UNASSIGNED" or candidate_info.get("student_name") == "Unassigned Student":
         try:
-            from rapidocr_onnxruntime import RapidOCR
-            ocr_engine = RapidOCR()
+            from scanner.app.services.candidate_ocr import run_ocr
             target_hdr = warped_hdr
             if target_hdr is None or target_hdr.size == 0:
                 # Use top 30% of image
                 h_img = image.shape[0]
                 target_hdr = image[:int(h_img * 0.3), :]
 
-            ocr_res, _ = ocr_engine(target_hdr)
+            ocr_res, _ = run_ocr(target_hdr)
             if ocr_res:
                 lines = [r[1].strip() for r in ocr_res]
                 full_hdr_text = "\n".join(lines)

@@ -59,6 +59,9 @@ export const startServer = async () => {
     const serverInstance = app.listen(PORT, "0.0.0.0", () => {
       console.log(`OMR Express Server running on http://localhost:${PORT}`);
     });
+    // Allow long-running batch uploads (50-100 sheets) without Node dropping the HTTP socket
+    serverInstance.requestTimeout = 1800000; // 30 minutes
+    serverInstance.headersTimeout = 1805000;
     return serverInstance;
   } catch (error) {
     console.error("Failed to start server:", error);

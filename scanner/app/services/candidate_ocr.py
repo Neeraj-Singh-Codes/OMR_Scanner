@@ -14,6 +14,7 @@ import os
 import re
 import base64
 import logging
+import threading
 import warnings
 from typing import Dict, Any, Optional, List, Tuple
 import cv2
@@ -39,8 +40,10 @@ from scanner.app.services.name_recognition import (
 
 logger = logging.getLogger(__name__)
 
-# Singleton OCR engine instances
+# Singleton OCR engine instances and thread-safety locks
 _ocr_engine: Optional[RapidOCR] = None
+_ocr_init_lock = threading.Lock()
+_ocr_run_lock = threading.Lock()
 _trocr_model: Any = None
 _trocr_processor: Any = None
 _trocr_load_attempted: bool = False
@@ -72,11 +75,21 @@ NAME_PHONETIC_CORRECTIONS: List[Tuple[str, str]] = [
 
 
 def get_ocr_engine() -> RapidOCR:
-    """Returns or initializes the singleton RapidOCR engine."""
+    """Returns or initializes the thread-safe singleton RapidOCR engine."""
     global _ocr_engine
-    if _ocr_engine is None:
-        _ocr_engine = RapidOCR()
+    if _ocr_engine is not None:
+        return _ocr_engine
+    with _ocr_init_lock:
+        if _ocr_engine is None:
+            _ocr_engine = RapidOCR()
     return _ocr_engine
+
+
+def run_ocr(image: np.ndarray):
+    """Executes RapidOCR safely under a lock to avoid ONNX Runtime thread contention."""
+    engine = get_ocr_engine()
+    with _ocr_run_lock:
+        return engine(image)
 
 
 def get_trocr_engine():
@@ -654,12 +667,11 @@ def extract_candidate_info(
             },
         }
 
-    engine = get_ocr_engine()
     H, W = header_image.shape[:2]
     template = crop_template or DEFAULT_NAME_CROP_TEMPLATE
 
     # --- PASS 1: Scene Text Anchor OCR ---
-    ocr_res, _ = engine(header_image)
+    ocr_res, _ = run_ocr(header_image)
     items = []
     if ocr_res:
         for box, txt, score in ocr_res:
@@ -812,7 +824,7 @@ def extract_candidate_info(
         if not name_tokens:
             hw_crop = name_crop[:, 68:] if name_crop.shape[1] > 75 else name_crop
             s2 = cv2.resize(hw_crop, (0, 0), fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
-            res_crop, _ = engine(s2)
+            res_crop, _ = run_ocr(s2)
             if res_crop:
                 for b, txt, sc in res_crop:
                     clean_t = re.sub(r'^[Nn][a-z]*[:.\s]*', '', txt)
@@ -841,8 +853,11 @@ def extract_candidate_info(
     )
 
     # Microsoft TrOCR Multi-Word Recognition & Dual-Engine Cross-Validation
+    # Disabled by default on CPU/low-RAM setups (set OMR_ENABLE_TROCR=true to enable)
+    # to prevent 1.3GB model RAM exhaustion and 60s+ batch timeouts.
     trocr_text, trocr_conf, trocr_preds = None, 0.0, []
-    if name_crop is not None and name_crop.size > 0 and (true_ink_px >= 30 or name_tokens):
+    enable_trocr = os.environ.get("OMR_ENABLE_TROCR", "false").lower() == "true"
+    if enable_trocr and name_crop is not None and name_crop.size > 0 and (true_ink_px >= 30 or name_tokens):
         trocr_text, trocr_conf, trocr_preds = recognize_name_with_trocr(name_crop, name_word_slots)
 
     name_raw_predictions = []
@@ -985,7 +1000,7 @@ def extract_candidate_info(
     # Strategy 1C: Targeted Roll Patch Crop
     if not detected_roll and roll_crop is not None and roll_crop.size > 0:
         scaled_roll = cv2.resize(roll_crop, (0, 0), fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
-        res_r, _ = engine(scaled_roll)
+        res_r, _ = run_ocr(scaled_roll)
         if res_r:
             for pb, pt, psc in res_r:
                 raw_roll_text = (raw_roll_text + " " + pt).strip()
@@ -1009,7 +1024,7 @@ def extract_candidate_info(
         full_crop = header_image[ry1:ry2, full_roll_x1:full_roll_x2]
         if full_crop is not None and full_crop.size > 0:
             scaled_full = cv2.resize(full_crop, (0, 0), fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
-            res_f, _ = engine(scaled_full)
+            res_f, _ = run_ocr(scaled_full)
             if res_f:
                 for pb, pt, psc in res_f:
                     m = re.search(r'(?:roll|roil|no|num|nu)?[^\d]*(\d{1,4})', pt, re.IGNORECASE)

@@ -8,6 +8,7 @@ Operates strictly independently of the roll-number recognition pipeline.
 import os
 import re
 import logging
+import threading
 import warnings
 from typing import Dict, Any, Optional, List, Tuple
 import cv2
@@ -23,10 +24,11 @@ os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 warnings.filterwarnings("ignore")
 
-# Singleton TrOCR engine state
+# Singleton TrOCR engine state & thread locks
 _trocr_base_model: Any = None
 _trocr_base_processor: Any = None
 _trocr_base_load_attempted: bool = False
+_trocr_lock = threading.Lock()
 
 # Default Name Field Crop Template relative to 900px header
 DEFAULT_NAME_CROP_TEMPLATE = {
@@ -40,52 +42,62 @@ DEFAULT_NAME_CROP_TEMPLATE = {
 def get_trocr_base_engine():
     """
     Returns or lazily initializes the singleton Microsoft TrOCR-base engine.
-    Uses 'microsoft/trocr-base-handwritten' as primary model.
+    Uses 'microsoft/trocr-base-handwritten' as primary model, preferring local cache.
     """
     global _trocr_base_model, _trocr_base_processor, _trocr_base_load_attempted
     if _trocr_base_processor is not None and _trocr_base_model is not None:
         return _trocr_base_processor, _trocr_base_model
-    if _trocr_base_load_attempted:
-        return None, None
-    _trocr_base_load_attempted = True
-    try:
-        import transformers
-        transformers.logging.set_verbosity_error()
-        transformers.logging.disable_progress_bar()
-        from transformers import TrOCRProcessor, VisionEncoderDecoderModel
-        import torch
-
-        # Restrict PyTorch thread count to prevent thread contention during multi-request batch scans
-        torch.set_num_threads(min(4, os.cpu_count() or 4))
-
-        model_name = os.environ.get("OMR_NAME_MODEL", "microsoft/trocr-base-handwritten")
-        processor = TrOCRProcessor.from_pretrained(model_name)
-        model = VisionEncoderDecoderModel.from_pretrained(model_name)
-        model.eval()
-
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        model.to(device)
-
-        _trocr_base_processor = processor
-        _trocr_base_model = model
-        return _trocr_base_processor, _trocr_base_model
-    except Exception as e:
-        logger.warning(f"Could not load TrOCR base model: {e}. Falling back to small model or RapidOCR.")
-        # Fallback to small model if base cannot be loaded
+    with _trocr_lock:
+        if _trocr_base_processor is not None and _trocr_base_model is not None:
+            return _trocr_base_processor, _trocr_base_model
+        if _trocr_base_load_attempted:
+            return None, None
+        _trocr_base_load_attempted = True
         try:
+            import transformers
+            transformers.logging.set_verbosity_error()
+            transformers.logging.disable_progress_bar()
             from transformers import TrOCRProcessor, VisionEncoderDecoderModel
             import torch
-            fallback_name = "microsoft/trocr-small-handwritten"
-            processor = TrOCRProcessor.from_pretrained(fallback_name)
-            model = VisionEncoderDecoderModel.from_pretrained(fallback_name)
+
+            # Restrict PyTorch thread count to prevent thread contention during batch scans
+            torch.set_num_threads(min(4, os.cpu_count() or 4))
+
+            model_name = os.environ.get("OMR_NAME_MODEL", "microsoft/trocr-base-handwritten")
+            try:
+                processor = TrOCRProcessor.from_pretrained(model_name, local_files_only=True)
+                model = VisionEncoderDecoderModel.from_pretrained(model_name, local_files_only=True)
+            except Exception:
+                processor = TrOCRProcessor.from_pretrained(model_name)
+                model = VisionEncoderDecoderModel.from_pretrained(model_name)
             model.eval()
+
             device = "cuda" if torch.cuda.is_available() else "cpu"
             model.to(device)
+
             _trocr_base_processor = processor
             _trocr_base_model = model
             return _trocr_base_processor, _trocr_base_model
-        except Exception:
-            return None, None
+        except Exception as e:
+            logger.warning(f"Could not load TrOCR base model: {e}. Falling back to small model or RapidOCR.")
+            try:
+                from transformers import TrOCRProcessor, VisionEncoderDecoderModel
+                import torch
+                fallback_name = "microsoft/trocr-small-handwritten"
+                try:
+                    processor = TrOCRProcessor.from_pretrained(fallback_name, local_files_only=True)
+                    model = VisionEncoderDecoderModel.from_pretrained(fallback_name, local_files_only=True)
+                except Exception:
+                    processor = TrOCRProcessor.from_pretrained(fallback_name)
+                    model = VisionEncoderDecoderModel.from_pretrained(fallback_name)
+                model.eval()
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+                model.to(device)
+                _trocr_base_processor = processor
+                _trocr_base_model = model
+                return _trocr_base_processor, _trocr_base_model
+            except Exception:
+                return None, None
 
 
 def validate_name_crop(crop_bgr: np.ndarray) -> Tuple[bool, str]:
